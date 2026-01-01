@@ -2,15 +2,15 @@ package tui
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mcdonaldj/codebak/internal/adapters/tuisvc"
 	"github.com/mcdonaldj/codebak/internal/backup"
 	"github.com/mcdonaldj/codebak/internal/config"
-	"github.com/mcdonaldj/codebak/internal/manifest"
+	"github.com/mcdonaldj/codebak/internal/ports"
 )
 
 // View represents the current view state
@@ -45,14 +45,15 @@ type VersionItem struct {
 // Model is the main TUI model
 type Model struct {
 	config   *config.Config
+	service  ports.TUIService // Injected service for testability
 	view     View
 	width    int
 	height   int
 	quitting bool
 
 	// Projects view
-	projects       []ProjectItem
-	projectCursor  int
+	projects        []ProjectItem
+	projectCursor   int
 	selectedProject string
 
 	// Versions view
@@ -141,16 +142,23 @@ var keys = keyMap{
 	),
 }
 
-// NewModel creates a new TUI model
+// NewModel creates a new TUI model with default service.
 func NewModel() (*Model, error) {
-	cfg, err := config.Load()
+	return NewModelWithService(tuisvc.New())
+}
+
+// NewModelWithService creates a new TUI model with a custom service.
+// This allows dependency injection for testing.
+func NewModelWithService(svc ports.TUIService) (*Model, error) {
+	cfg, err := svc.LoadConfig()
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
 
 	m := &Model{
-		config: cfg,
-		view:   ProjectsView,
+		config:  cfg,
+		service: svc,
+		view:    ProjectsView,
 	}
 
 	if err := m.loadProjects(); err != nil {
@@ -160,37 +168,32 @@ func NewModel() (*Model, error) {
 	return m, nil
 }
 
+// NewModelWithConfig creates a new TUI model with a provided config and service.
+// This is useful for testing with pre-configured state.
+func NewModelWithConfig(cfg *config.Config, svc ports.TUIService) *Model {
+	return &Model{
+		config:  cfg,
+		service: svc,
+		view:    ProjectsView,
+	}
+}
+
 // loadProjects loads all projects with their backup info
 func (m *Model) loadProjects() error {
-	sourceDir := config.ExpandPath(m.config.SourceDir)
-	backupDir := config.ExpandPath(m.config.BackupDir)
-
-	projects, err := backup.ListProjects(sourceDir)
+	projects, err := m.service.ListProjects(m.config)
 	if err != nil {
 		return err
 	}
 
 	m.projects = nil
-	for _, name := range projects {
-		item := ProjectItem{
-			Name: name,
-			Path: filepath.Join(sourceDir, name),
-		}
-
-		// Load manifest if exists
-		mf, err := manifest.Load(backupDir, name)
-		if err == nil && len(mf.Backups) > 0 {
-			item.Versions = len(mf.Backups)
-			latest := mf.LatestBackup()
-			if latest != nil {
-				item.LastBackup = latest.CreatedAt
-			}
-			for _, b := range mf.Backups {
-				item.TotalSize += b.SizeBytes
-			}
-		}
-
-		m.projects = append(m.projects, item)
+	for _, p := range projects {
+		m.projects = append(m.projects, ProjectItem{
+			Name:       p.Name,
+			Path:       p.Path,
+			Versions:   p.Versions,
+			LastBackup: p.LastBackup,
+			TotalSize:  p.TotalSize,
+		})
 	}
 
 	return nil
@@ -198,27 +201,20 @@ func (m *Model) loadProjects() error {
 
 // loadVersions loads backup versions for the selected project
 func (m *Model) loadVersions() error {
-	backupDir := config.ExpandPath(m.config.BackupDir)
-
-	mf, err := manifest.Load(backupDir, m.selectedProject)
+	versions, err := m.service.ListVersions(m.config, m.selectedProject)
 	if err != nil {
 		return err
 	}
 
 	m.versions = nil
-	for _, b := range mf.Backups {
+	for _, v := range versions {
 		m.versions = append(m.versions, VersionItem{
-			File:      b.File,
-			Size:      b.SizeBytes,
-			FileCount: b.FileCount,
-			GitHead:   b.GitHead,
-			CreatedAt: b.CreatedAt,
+			File:      v.File,
+			Size:      v.Size,
+			FileCount: v.FileCount,
+			GitHead:   v.GitHead,
+			CreatedAt: v.CreatedAt,
 		})
-	}
-
-	// Reverse so newest is first
-	for i, j := 0, len(m.versions)-1; i < j; i, j = i+1, j-1 {
-		m.versions[i], m.versions[j] = m.versions[j], m.versions[i]
 	}
 
 	return nil
@@ -409,7 +405,7 @@ func (m *Model) runBackup() tea.Cmd {
 			return statusMsg{err: true, msg: "No project selected"}
 		}
 
-		result := backup.BackupProject(m.config, project)
+		result := m.service.RunBackup(m.config, project)
 		if result.Error != nil {
 			return statusMsg{err: true, msg: fmt.Sprintf("Backup failed: %v", result.Error)}
 		}
@@ -433,22 +429,8 @@ func (m *Model) runVerify() tea.Cmd {
 			return statusMsg{err: true, msg: "No project selected"}
 		}
 
-		// Verify using recovery package
-		backupDir := config.ExpandPath(m.config.BackupDir)
-		mf, err := manifest.Load(backupDir, project)
-		if err != nil || len(mf.Backups) == 0 {
-			return statusMsg{err: true, msg: "No backups to verify"}
-		}
-
-		latest := mf.LatestBackup()
-		zipPath := filepath.Join(backupDir, project, latest.File)
-		actualChecksum, err := manifest.ComputeSHA256(zipPath)
-		if err != nil {
-			return statusMsg{err: true, msg: fmt.Sprintf("Verify failed: %v", err)}
-		}
-
-		if actualChecksum != latest.SHA256 {
-			return statusMsg{err: true, msg: "✗ Checksum mismatch!"}
+		if err := m.service.VerifyBackup(m.config, project); err != nil {
+			return statusMsg{err: true, msg: fmt.Sprintf("✗ %v", err)}
 		}
 
 		return statusMsg{msg: fmt.Sprintf("✓ %s verified", project)}
