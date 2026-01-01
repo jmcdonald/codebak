@@ -58,6 +58,16 @@ var (
 			Foreground(errorColor).
 			Bold(true)
 
+	// Diff view styles
+	addedStyle = lipgloss.NewStyle().
+			Foreground(secondaryColor) // Green for added lines
+
+	deletedStyle = lipgloss.NewStyle().
+			Foreground(errorColor) // Red for deleted lines
+
+	unchangedStyle = lipgloss.NewStyle().
+			Foreground(mutedColor) // Gray for context lines
+
 	// Table headers
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
