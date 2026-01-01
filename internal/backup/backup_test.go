@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mcdonaldj/codebak/internal/config"
 	"github.com/mcdonaldj/codebak/internal/manifest"
 )
 
@@ -267,5 +268,242 @@ func TestFormatSize(t *testing.T) {
 				t.Errorf("FormatSize(%d) = %q, expected %q", tt.bytes, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestListProjects(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create some project directories
+	projects := []string{"project-a", "project-b", "project-c"}
+	for _, p := range projects {
+		if err := os.MkdirAll(filepath.Join(tempDir, p), 0755); err != nil {
+			t.Fatalf("Failed to create project dir: %v", err)
+		}
+	}
+
+	// Create hidden directory (should be excluded)
+	if err := os.MkdirAll(filepath.Join(tempDir, ".hidden"), 0755); err != nil {
+		t.Fatalf("Failed to create hidden dir: %v", err)
+	}
+
+	// Create a file (should be excluded - only dirs)
+	if err := os.WriteFile(filepath.Join(tempDir, "file.txt"), []byte("content"), 0644); err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+
+	result, err := ListProjects(tempDir)
+	if err != nil {
+		t.Fatalf("ListProjects failed: %v", err)
+	}
+
+	if len(result) != len(projects) {
+		t.Errorf("ListProjects returned %d projects, expected %d", len(result), len(projects))
+	}
+
+	// Check all expected projects are present
+	projectMap := make(map[string]bool)
+	for _, p := range result {
+		projectMap[p] = true
+	}
+	for _, p := range projects {
+		if !projectMap[p] {
+			t.Errorf("Expected project %q not found", p)
+		}
+	}
+
+	// Hidden dir should not be included
+	if projectMap[".hidden"] {
+		t.Error("Hidden directory should not be included")
+	}
+}
+
+func TestListProjectsEmptyDir(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	result, err := ListProjects(tempDir)
+	if err != nil {
+		t.Fatalf("ListProjects failed: %v", err)
+	}
+
+	if len(result) != 0 {
+		t.Errorf("ListProjects returned %d projects for empty dir, expected 0", len(result))
+	}
+}
+
+func TestListProjectsNonExistent(t *testing.T) {
+	_, err := ListProjects("/nonexistent/path")
+	if err == nil {
+		t.Error("ListProjects should fail for non-existent directory")
+	}
+}
+
+func TestGetGitHeadNonGitRepo(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	result := GetGitHead(tempDir)
+	if result != "" {
+		t.Errorf("GetGitHead for non-git repo should return empty string, got %q", result)
+	}
+}
+
+func TestBackupProjectNotFound(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := &config.Config{
+		SourceDir: tempDir,
+		BackupDir: filepath.Join(tempDir, "backups"),
+	}
+
+	result := BackupProject(cfg, "nonexistent-project")
+	if result.Error == nil {
+		t.Error("BackupProject should fail for non-existent project")
+	}
+}
+
+func TestBackupProjectSuccess(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(sourceDir, "test-project")
+
+	// Create project with files
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: backupDir,
+		Exclude:   []string{"node_modules"},
+	}
+
+	result := BackupProject(cfg, "test-project")
+	if result.Error != nil {
+		t.Fatalf("BackupProject failed: %v", result.Error)
+	}
+
+	if result.Skipped {
+		t.Error("First backup should not be skipped")
+	}
+
+	if result.FileCount != 1 {
+		t.Errorf("FileCount = %d, expected 1", result.FileCount)
+	}
+
+	if result.Size == 0 {
+		t.Error("Size should not be 0")
+	}
+
+	// Verify zip was created
+	if _, err := os.Stat(result.ZipPath); os.IsNotExist(err) {
+		t.Error("Zip file was not created")
+	}
+}
+
+func TestBackupProjectSkipsUnchanged(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(sourceDir, "test-project")
+
+	// Create project
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: backupDir,
+	}
+
+	// First backup
+	result1 := BackupProject(cfg, "test-project")
+	if result1.Error != nil {
+		t.Fatalf("First backup failed: %v", result1.Error)
+	}
+
+	// Second backup (should be skipped since no changes)
+	result2 := BackupProject(cfg, "test-project")
+	if result2.Error != nil {
+		t.Fatalf("Second backup failed: %v", result2.Error)
+	}
+
+	if !result2.Skipped {
+		t.Error("Second backup should be skipped (no changes)")
+	}
+}
+
+func TestRunBackup(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	backupDir := filepath.Join(tempDir, "backups")
+
+	// Create two projects
+	for _, name := range []string{"project-a", "project-b"} {
+		projectDir := filepath.Join(sourceDir, name)
+		if err := os.MkdirAll(projectDir, 0755); err != nil {
+			t.Fatalf("Failed to create project dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main"), 0644); err != nil {
+			t.Fatalf("Failed to create test file: %v", err)
+		}
+	}
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: backupDir,
+	}
+
+	results, err := RunBackup(cfg)
+	if err != nil {
+		t.Fatalf("RunBackup failed: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("RunBackup returned %d results, expected 2", len(results))
+	}
+
+	for _, r := range results {
+		if r.Error != nil {
+			t.Errorf("Backup of %s failed: %v", r.Project, r.Error)
+		}
 	}
 }

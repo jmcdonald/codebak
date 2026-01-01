@@ -2,9 +2,13 @@ package recovery
 
 import (
 	"archive/zip"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/mcdonaldj/codebak/internal/config"
 )
 
 func TestIsWithinDir(t *testing.T) {
@@ -131,7 +135,7 @@ func TestExtractZipValidArchive(t *testing.T) {
 	}
 
 	// Verify files were extracted
-	extractedFile := filepath.Join(destDir, "project", "file.txt")
+	extractedFile := filepath.Join(destDir, "test-project", "file.txt")
 	content, err := os.ReadFile(extractedFile)
 	if err != nil {
 		t.Fatalf("Failed to read extracted file: %v", err)
@@ -178,8 +182,8 @@ func createValidZip(t *testing.T, path string) {
 
 	w := zip.NewWriter(f)
 
-	// Add a valid file
-	fw, err := w.Create("project/file.txt")
+	// Add a valid file (using test-project as folder name to match manifest)
+	fw, err := w.Create("test-project/file.txt")
 	if err != nil {
 		t.Fatalf("Failed to create zip entry: %v", err)
 	}
@@ -187,5 +191,349 @@ func createValidZip(t *testing.T, path string) {
 
 	if err := w.Close(); err != nil {
 		t.Fatalf("Failed to close zip writer: %v", err)
+	}
+}
+
+func TestVerifySuccess(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Setup test backup
+	setupTestBackup(t, tempDir)
+
+	cfg := &config.Config{
+		SourceDir: filepath.Join(tempDir, "source"),
+		BackupDir: filepath.Join(tempDir, "backups"),
+	}
+
+	err = Verify(cfg, "test-project", "")
+	if err != nil {
+		t.Errorf("Verify failed: %v", err)
+	}
+}
+
+func TestVerifyNoBackups(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := &config.Config{
+		BackupDir: tempDir,
+	}
+
+	err = Verify(cfg, "nonexistent", "")
+	if err == nil {
+		t.Error("Verify should fail for non-existent project")
+	}
+}
+
+func TestListVersions(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Setup test backup
+	setupTestBackup(t, tempDir)
+
+	cfg := &config.Config{
+		BackupDir: filepath.Join(tempDir, "backups"),
+	}
+
+	versions, err := ListVersions(cfg, "test-project")
+	if err != nil {
+		t.Fatalf("ListVersions failed: %v", err)
+	}
+
+	if len(versions) != 1 {
+		t.Errorf("ListVersions returned %d versions, expected 1", len(versions))
+	}
+}
+
+func TestListVersionsNoBackups(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := &config.Config{
+		BackupDir: tempDir,
+	}
+
+	versions, err := ListVersions(cfg, "nonexistent")
+	if err != nil {
+		t.Fatalf("ListVersions failed: %v", err)
+	}
+
+	if len(versions) != 0 {
+		t.Errorf("ListVersions should return empty for non-existent project, got %d", len(versions))
+	}
+}
+
+func TestRecoverWithWipe(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Setup test backup
+	setupTestBackup(t, tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	projectPath := filepath.Join(sourceDir, "test-project")
+
+	// Create existing project
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectPath, "existing.txt"), []byte("existing"), 0644); err != nil {
+		t.Fatalf("Failed to create existing file: %v", err)
+	}
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: filepath.Join(tempDir, "backups"),
+	}
+
+	opts := RecoverOptions{
+		Project: "test-project",
+		Wipe:    true,
+	}
+
+	err = Recover(cfg, opts)
+	if err != nil {
+		t.Fatalf("Recover failed: %v", err)
+	}
+
+	// Check that restored file exists
+	restoredFile := filepath.Join(projectPath, "file.txt")
+	if _, err := os.Stat(restoredFile); os.IsNotExist(err) {
+		t.Error("Restored file not found")
+	}
+
+	// Check that old file is gone
+	if _, err := os.Stat(filepath.Join(projectPath, "existing.txt")); err == nil {
+		t.Error("Existing file should have been wiped")
+	}
+}
+
+func TestRecoverWithArchive(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Setup test backup
+	setupTestBackup(t, tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	projectPath := filepath.Join(sourceDir, "test-project")
+
+	// Create existing project
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectPath, "existing.txt"), []byte("existing"), 0644); err != nil {
+		t.Fatalf("Failed to create existing file: %v", err)
+	}
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: filepath.Join(tempDir, "backups"),
+	}
+
+	opts := RecoverOptions{
+		Project: "test-project",
+		Archive: true,
+	}
+
+	err = Recover(cfg, opts)
+	if err != nil {
+		t.Fatalf("Recover failed: %v", err)
+	}
+
+	// Check that archived project exists
+	entries, _ := os.ReadDir(sourceDir)
+	hasArchive := false
+	for _, e := range entries {
+		if len(e.Name()) > len("test-project-archived-") && e.Name()[:len("test-project-archived-")] == "test-project-archived-" {
+			hasArchive = true
+			break
+		}
+	}
+	if !hasArchive {
+		t.Error("Archived project not found")
+	}
+}
+
+func TestRecoverExistingNoOption(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Setup test backup
+	setupTestBackup(t, tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	projectPath := filepath.Join(sourceDir, "test-project")
+
+	// Create existing project
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: filepath.Join(tempDir, "backups"),
+	}
+
+	opts := RecoverOptions{
+		Project: "test-project",
+		// No Wipe or Archive
+	}
+
+	err = Recover(cfg, opts)
+	if err == nil {
+		t.Error("Recover should fail when project exists without --wipe or --archive")
+	}
+}
+
+func TestRecoverToNewLocation(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Setup test backup
+	setupTestBackup(t, tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	projectPath := filepath.Join(sourceDir, "test-project")
+
+	// Ensure project doesn't exist
+	os.RemoveAll(projectPath)
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: filepath.Join(tempDir, "backups"),
+	}
+
+	opts := RecoverOptions{
+		Project: "test-project",
+	}
+
+	err = Recover(cfg, opts)
+	if err != nil {
+		t.Fatalf("Recover failed: %v", err)
+	}
+
+	// Check that restored file exists
+	restoredFile := filepath.Join(projectPath, "file.txt")
+	content, err := os.ReadFile(restoredFile)
+	if err != nil {
+		t.Fatalf("Failed to read restored file: %v", err)
+	}
+
+	if string(content) != "test content" {
+		t.Errorf("Restored content = %q, expected %q", string(content), "test content")
+	}
+}
+
+// setupTestBackup creates a test backup with manifest
+func setupTestBackup(t *testing.T, tempDir string) {
+	t.Helper()
+
+	backupDir := filepath.Join(tempDir, "backups")
+	projectBackupDir := filepath.Join(backupDir, "test-project")
+
+	if err := os.MkdirAll(projectBackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	// Create a valid zip
+	zipPath := filepath.Join(projectBackupDir, "20260101-120000.zip")
+	createValidZip(t, zipPath)
+
+	// Create manifest with correct checksum
+	checksum := computeTestChecksum(t, zipPath)
+	manifestContent := fmt.Sprintf(`{
+		"project": "test-project",
+		"source": "%s",
+		"backups": [{
+			"file": "20260101-120000.zip",
+			"sha256": "%s",
+			"size_bytes": 100,
+			"created_at": "2026-01-01T12:00:00Z",
+			"git_head": "abc123",
+			"file_count": 1,
+			"excluded": []
+		}]
+	}`, filepath.Join(tempDir, "source", "test-project"), checksum)
+
+	manifestPath := filepath.Join(projectBackupDir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+		t.Fatalf("Failed to write manifest: %v", err)
+	}
+}
+
+func computeTestChecksum(t *testing.T, path string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("Failed to read file for checksum: %v", err)
+	}
+
+	h := sha256.Sum256(data)
+	return fmt.Sprintf("%x", h)
+}
+
+func TestExtractFile(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create a zip file
+	zipPath := filepath.Join(tempDir, "test.zip")
+	createValidZip(t, zipPath)
+
+	// Open and extract
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatalf("Failed to open zip: %v", err)
+	}
+	defer r.Close()
+
+	if len(r.File) == 0 {
+		t.Fatal("Zip has no files")
+	}
+
+	destPath := filepath.Join(tempDir, "extracted.txt")
+	err = extractFile(r.File[0], destPath)
+	if err != nil {
+		t.Fatalf("extractFile failed: %v", err)
+	}
+
+	content, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("Failed to read extracted file: %v", err)
+	}
+
+	if string(content) != "test content" {
+		t.Errorf("Content = %q, expected %q", string(content), "test content")
 	}
 }
