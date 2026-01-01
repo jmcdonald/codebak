@@ -16,31 +16,42 @@ Sleep 3s
 # Screenshot the projects view
 Screenshot docs/screenshots/projects-view.png
 
-# Navigate down through projects
-Down
-Sleep 500ms
-Down
-Sleep 500ms
-
-# Select a project to see versions
+# Navigate to website-redesign (first project)
 Enter
 Sleep 2s
 Screenshot docs/screenshots/versions-view.png
 
-# Navigate versions
+# Navigate to diff view - press 'd' for diff
+Type "d"
+Sleep 1s
+Screenshot docs/screenshots/diff-select.png
+
+# Select versions and view diff result
 Down
 Sleep 500ms
+Enter
+Sleep 2s
+Screenshot docs/screenshots/diff-result.png
+
+# Drill into a file to see line-by-line diff
 Down
 Sleep 500ms
+Enter
+Sleep 2s
+Screenshot docs/screenshots/file-diff.png
+
+# Go back
+Escape
+Sleep 500ms
+Escape
+Sleep 500ms
+Escape
+Sleep 1s
 
 # Run backup on current project
 Type "r"
 Sleep 3s
 Screenshot docs/screenshots/backup-complete.png
-
-# Go back to projects
-Escape
-Sleep 1s
 
 # Verify a backup
 Type "v"

@@ -64,6 +64,19 @@ Sleep 3s
 # Screenshot diff result showing file changes
 Screenshot docs/screenshots/diff-result.png
 
+# Enter a file to see line-by-line diff (select first modified file)
+Down
+Sleep 300ms
+Enter
+Sleep 2s
+
+# Screenshot file diff view
+Screenshot docs/screenshots/file-diff.png
+
+# Go back to diff result
+Escape
+Sleep 500ms
+
 # Go back to versions
 Escape
 Sleep 1s

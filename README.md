@@ -23,7 +23,8 @@
 
 - **Smart Change Detection** — Only backs up when git HEAD changes or files are modified
 - **Interactive TUI** — Navigate projects, versions, and diffs with vim-style keybindings
-- **Version Comparison** — Diff any two backup versions side-by-side
+- **Version Comparison** — Diff any two backup versions to see added, modified, and deleted files
+- **Line-by-Line Diff** — Drill into files to see exactly what changed with colored diffs
 - **Integrity Verification** — SHA256 checksums ensure your backups are intact
 - **Automatic Scheduling** — Set-and-forget daily backups via launchd
 - **Safe Recovery** — Restore with archive or wipe options to protect existing code
@@ -41,12 +42,12 @@
 </tr>
 <tr>
 <td width="50%">
-<img src="docs/screenshots/diff-select.png" alt="Select two versions to compare">
-<p align="center"><em>Select versions to compare</em></p>
+<img src="docs/screenshots/diff-result.png" alt="Diff result showing added, modified, and deleted files">
+<p align="center"><em>Compare versions: see what changed</em></p>
 </td>
 <td width="50%">
-<img src="docs/screenshots/verify-result.png" alt="Backup integrity verification">
-<p align="center"><em>Verify backup integrity</em></p>
+<img src="docs/screenshots/file-diff.png" alt="Line-by-line file diff with colored additions and deletions">
+<p align="center"><em>Drill into files for line-by-line diff</em></p>
 </td>
 </tr>
 </table>
@@ -131,10 +132,11 @@ retention:
 | Key | Action |
 | --- | ------ |
 | `j` / `k` | Navigate up/down |
-| `Enter` | Select item |
+| `Enter` | Select item / drill into file |
 | `Backspace` | Go back |
 | `d` | Enter diff mode |
-| `Space` | Toggle selection |
+| `Space` | Toggle version selection |
+| `s` | Swap diff sides (in file diff view) |
 | `v` | Verify backup |
 | `r` | Recover version |
 | `q` | Quit |

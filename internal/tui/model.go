@@ -20,7 +20,8 @@ const (
 	ProjectsView View = iota
 	VersionsView
 	DiffSelectView // Selecting versions to compare
-	DiffResultView // Showing diff results
+	DiffResultView // Showing diff results (file list)
+	FileDiffView   // Showing actual file content diff
 )
 
 // ProjectItem represents a project in the list
@@ -63,6 +64,11 @@ type Model struct {
 	diffResult     *DiffResult // Result of diff comparison
 	diffCursor     int         // Cursor in diff result view
 
+	// File diff view
+	fileDiffResult *FileDiffResult // Line-by-line diff of selected file
+	fileDiffScroll int             // Scroll offset in file diff view
+	diffSwapped    bool            // Whether versions are swapped (v2 on left)
+
 	// Status message
 	statusMsg string
 	statusErr bool
@@ -79,6 +85,7 @@ type keyMap struct {
 	Recover key.Binding
 	Diff    key.Binding
 	Select  key.Binding
+	Swap    key.Binding
 	Quit    key.Binding
 	Help    key.Binding
 }
@@ -119,6 +126,10 @@ var keys = keyMap{
 	Select: key.NewBinding(
 		key.WithKeys(" ", "tab"),
 		key.WithHelp("space", "select"),
+	),
+	Swap: key.NewBinding(
+		key.WithKeys("s"),
+		key.WithHelp("s", "swap"),
 	),
 	Quit: key.NewBinding(
 		key.WithKeys("q", "ctrl+c"),
@@ -250,6 +261,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case fileDiffMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("File diff failed: %v", msg.err)
+			m.statusErr = true
+		} else {
+			m.fileDiffResult = msg.result
+			m.fileDiffScroll = 0
+			m.view = FileDiffView
+			m.statusMsg = ""
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		// Clear status on any key
 		m.statusMsg = ""
@@ -276,6 +299,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.view = VersionsView
 					m.versionCursor = 0
 				}
+			} else if m.view == DiffResultView && m.diffResult != nil && len(m.diffResult.Changes) > 0 {
+				// Drill into file diff
+				change := m.diffResult.Changes[m.diffCursor]
+				return m, m.computeFileDiff(change)
 			}
 
 		case key.Matches(msg, keys.Back):
@@ -290,6 +317,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.view = VersionsView
 				m.diffResult = nil
 				m.diffCursor = 0
+			case FileDiffView:
+				m.view = DiffResultView
+				m.fileDiffResult = nil
+				m.fileDiffScroll = 0
 			}
 
 		case key.Matches(msg, keys.Run):
@@ -308,6 +339,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, keys.Select):
 			if m.view == DiffSelectView {
 				return m, m.toggleDiffSelection()
+			}
+
+		case key.Matches(msg, keys.Swap):
+			if m.view == FileDiffView && m.fileDiffResult != nil {
+				m.diffSwapped = !m.diffSwapped
 			}
 		}
 	}
@@ -341,6 +377,20 @@ func (m *Model) moveCursor(delta int) {
 			}
 			if m.diffCursor >= len(m.diffResult.Changes) {
 				m.diffCursor = len(m.diffResult.Changes) - 1
+			}
+		}
+	case FileDiffView:
+		if m.fileDiffResult != nil {
+			m.fileDiffScroll += delta
+			if m.fileDiffScroll < 0 {
+				m.fileDiffScroll = 0
+			}
+			maxScroll := len(m.fileDiffResult.Lines) - (m.height - 10)
+			if maxScroll < 0 {
+				maxScroll = 0
+			}
+			if m.fileDiffScroll > maxScroll {
+				m.fileDiffScroll = maxScroll
 			}
 		}
 	}
@@ -415,6 +465,11 @@ type diffMsg struct {
 	err    error
 }
 
+type fileDiffMsg struct {
+	result *FileDiffResult
+	err    error
+}
+
 func (m *Model) toggleDiffSelection() tea.Cmd {
 	// Toggle selection for current version
 	idx := m.versionCursor
@@ -465,6 +520,8 @@ func (m *Model) View() string {
 		content = m.renderDiffSelectView()
 	case DiffResultView:
 		content = m.renderDiffResultView()
+	case FileDiffView:
+		content = m.renderFileDiffView()
 	}
 
 	return appStyle.Render(content)
@@ -797,7 +854,134 @@ func (m *Model) renderDiffResultView() string {
 	b.WriteString("\n")
 
 	// Help
-	help := "[↑/↓] navigate  [esc] back  [q] quit"
+	help := "[↑/↓] navigate  [enter] view diff  [esc] back  [q] quit"
+	b.WriteString(helpStyle.Render(help))
+
+	return b.String()
+}
+
+func (m *Model) computeFileDiff(change FileChange) tea.Cmd {
+	return func() tea.Msg {
+		result, err := ComputeFileDiff(
+			m.config,
+			m.selectedProject,
+			m.diffResult.Version1,
+			m.diffResult.Version2,
+			change.Path,
+			change.Status,
+		)
+		return fileDiffMsg{result: result, err: err}
+	}
+}
+
+func (m *Model) renderFileDiffView() string {
+	var b strings.Builder
+
+	if m.fileDiffResult == nil {
+		return "Loading..."
+	}
+
+	// Title with file path
+	v1, v2 := m.fileDiffResult.Version1, m.fileDiffResult.Version2
+	if m.diffSwapped {
+		v1, v2 = v2, v1
+	}
+	title := titleStyle.Render(fmt.Sprintf(" 📄 %s ", m.fileDiffResult.Path))
+	b.WriteString(title)
+	b.WriteString("\n")
+
+	// Version headers
+	header := fmt.Sprintf("  %-35s │ %-35s", v1, v2)
+	b.WriteString(dimStyle.Render(header))
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render(strings.Repeat("─", 75)))
+	b.WriteString("\n")
+
+	// Handle special cases
+	if m.fileDiffResult.Error != "" {
+		b.WriteString(errorBadge.Render(m.fileDiffResult.Error))
+		b.WriteString("\n")
+	} else if m.fileDiffResult.IsBinary {
+		b.WriteString(dimStyle.Render("  Binary file - content diff not available"))
+		b.WriteString("\n")
+	} else if len(m.fileDiffResult.Lines) == 0 {
+		b.WriteString(dimStyle.Render("  No differences"))
+		b.WriteString("\n")
+	} else {
+		// Render diff lines
+		visibleHeight := m.height - 12
+		if visibleHeight < 5 {
+			visibleHeight = 5
+		}
+
+		endIdx := m.fileDiffScroll + visibleHeight
+		if endIdx > len(m.fileDiffResult.Lines) {
+			endIdx = len(m.fileDiffResult.Lines)
+		}
+
+		for i := m.fileDiffScroll; i < endIdx; i++ {
+			line := m.fileDiffResult.Lines[i]
+
+			// Format line numbers
+			ln1 := "   "
+			ln2 := "   "
+			if line.LineNum1 > 0 {
+				ln1 = fmt.Sprintf("%3d", line.LineNum1)
+			}
+			if line.LineNum2 > 0 {
+				ln2 = fmt.Sprintf("%3d", line.LineNum2)
+			}
+
+			// Swap if needed
+			if m.diffSwapped {
+				ln1, ln2 = ln2, ln1
+			}
+
+			// Truncate content for display
+			content := line.Content
+			maxWidth := 60
+			if len(content) > maxWidth {
+				content = content[:maxWidth-3] + "..."
+			}
+
+			// Style based on change type
+			var lineStr string
+			switch line.Type {
+			case '+':
+				lineStr = fmt.Sprintf("%s  + │ %s  + %s", ln1, ln2, content)
+				b.WriteString(addedStyle.Render(lineStr))
+			case '-':
+				lineStr = fmt.Sprintf("%s  - │ %s  - %s", ln1, ln2, content)
+				b.WriteString(deletedStyle.Render(lineStr))
+			default:
+				lineStr = fmt.Sprintf("%s    │ %s    %s", ln1, ln2, content)
+				b.WriteString(dimStyle.Render(lineStr))
+			}
+			b.WriteString("\n")
+		}
+
+		// Scroll indicator
+		if len(m.fileDiffResult.Lines) > visibleHeight {
+			scrollInfo := fmt.Sprintf("  Lines %d-%d of %d",
+				m.fileDiffScroll+1, endIdx, len(m.fileDiffResult.Lines))
+			b.WriteString(dimStyle.Render(scrollInfo))
+			b.WriteString("\n")
+		}
+	}
+
+	// Status
+	b.WriteString("\n")
+	if m.statusMsg != "" {
+		if m.statusErr {
+			b.WriteString(errorBadge.Render(m.statusMsg))
+		} else {
+			b.WriteString(successBadge.Render(m.statusMsg))
+		}
+	}
+	b.WriteString("\n")
+
+	// Help
+	help := "[↑/↓] scroll  [s] swap sides  [esc] back  [q] quit"
 	b.WriteString(helpStyle.Render(help))
 
 	return b.String()
