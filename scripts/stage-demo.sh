@@ -131,9 +131,9 @@ create_backup() {
 
     mkdir -p "$backup_dir"
 
-    # Create a zip with actual content
-    cd "$DEMO_SOURCE/$project"
-    zip -r "$zip_file" . -x "*.git*" > /dev/null 2>&1
+    # Create a zip with actual content (include project name as root directory)
+    cd "$DEMO_SOURCE"
+    zip -r "$zip_file" "$project" -x "*.git*" > /dev/null 2>&1
 
     # Calculate actual size and checksum
     local actual_size=$(stat -f%z "$zip_file" 2>/dev/null || stat -c%s "$zip_file")
@@ -193,8 +193,8 @@ create_backup "cli-toolkit" "20251230-030000" 12 45 "fff666g" 2
 
 echo "==> Creating diff data for version comparison..."
 
-# Modify website-redesign to create actual differences between versions
-# Add new file for version 2
+# Modify website-redesign to create compelling differences between versions
+# Add multiple new files
 cat > "$DEMO_SOURCE/website-redesign/pkg/api/auth.go" << 'EOF'
 package api
 
@@ -205,6 +205,28 @@ type AuthMiddleware struct {
 
 func (a *AuthMiddleware) Validate(token string) bool {
     return len(token) > 0
+}
+EOF
+
+cat > "$DEMO_SOURCE/website-redesign/pkg/api/middleware.go" << 'EOF'
+package api
+
+// LoggingMiddleware logs all requests
+type LoggingMiddleware struct{}
+
+func (l *LoggingMiddleware) Log(method, path string) {
+    // Log request details
+}
+EOF
+
+mkdir -p "$DEMO_SOURCE/website-redesign/config"
+cat > "$DEMO_SOURCE/website-redesign/config/settings.go" << 'EOF'
+package config
+
+type Settings struct {
+    Port     int
+    Debug    bool
+    LogLevel string
 }
 EOF
 
@@ -234,7 +256,10 @@ func healthCheck() string {
 }
 EOF
 
-# Create a new backup with the modified files
+# Delete a file that existed in older versions
+rm -f "$DEMO_SOURCE/website-redesign/pkg/api/handler.go"
+
+# Create a new backup with all these changes
 create_backup "website-redesign" "20260101-140000" 48 130 "new123x" 0
 
 echo ""
