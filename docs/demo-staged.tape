@@ -3,11 +3,7 @@
 # Prerequisites: Run ./scripts/stage-demo.sh first
 #
 # Usage:
-#   ./scripts/stage-demo.sh
-#   cp ~/.codebak/config.yaml ~/.codebak/config.yaml.bak  # backup real config
-#   cp /tmp/codebak-demo/.codebak/config.yaml ~/.codebak/config.yaml  # use demo
-#   vhs docs/demo-staged.tape
-#   mv ~/.codebak/config.yaml.bak ~/.codebak/config.yaml  # restore
+#   ./scripts/run-demo-capture.sh
 
 Output docs/codebak-demo.gif
 Set Width 900
@@ -42,34 +38,33 @@ Sleep 2s
 # Screenshot versions view (5 versions)
 Screenshot docs/screenshots/versions-view.png
 
-# Navigate to show variety
-Down
-Sleep 300ms
-
 # Start diff mode
 Type "d"
 Sleep 1s
 
-# Screenshot diff selection
+# Screenshot diff selection mode
 Screenshot docs/screenshots/diff-select.png
 
-# Select first version (newest with changes)
-Sleep 500ms
+# Select first version (newest - 20260101-140000)
 Space
 Sleep 500ms
 
-# Move to second version
+# Move down to older version (20251231-030000 has different content)
+Down
+Sleep 200ms
+Down
+Sleep 200ms
 Down
 Sleep 300ms
 
-# Select second version
+# Select second version - triggers diff computation
 Space
-Sleep 2s
+Sleep 3s
 
 # Screenshot diff result showing file changes
 Screenshot docs/screenshots/diff-result.png
 
-# Go back
+# Go back to versions
 Escape
 Sleep 1s
 
