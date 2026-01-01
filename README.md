@@ -2,6 +2,8 @@
 
 Incremental code backup tool with TUI for macOS/Linux.
 
+![codebak TUI demo](docs/codebak-demo.gif)
+
 ## Quick Install
 
 ```bash
@@ -34,6 +36,16 @@ codebak
 - **Retention policy**: Automatic pruning of old backups
 - **Recovery**: Restore any version with optional wipe or archive of current
 - **Scheduling**: macOS launchd integration for daily backups
+
+### Screenshots
+
+| Projects View | Version History |
+|---------------|-----------------|
+| ![Projects list showing backup status](docs/screenshots/projects-view.png) | ![Version history with git commits](docs/screenshots/versions-view.png) |
+
+| Diff Selection | Backup Verification |
+|----------------|---------------------|
+| ![Select versions to compare](docs/screenshots/diff-select.png) | ![Verify backup integrity](docs/screenshots/verify-result.png) |
 
 ## Configuration
 
