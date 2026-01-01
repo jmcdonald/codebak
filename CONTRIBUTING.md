@@ -19,21 +19,103 @@ make test
 make install
 ```
 
+## Testing Policy
+
+This section defines what code MUST, SHOULD, and SHOULD NOT be tested.
+
+### Testing Rules
+
+| Category | Rule | Reason |
+|----------|------|--------|
+| `internal/backup/` | **MUST TEST** | Core business logic for backup operations |
+| `internal/config/` | **MUST TEST** | Configuration loading and validation |
+| `internal/manifest/` | **MUST TEST** | Manifest generation and checksum verification |
+| `internal/recovery/` | **MUST TEST** | Recovery operations - critical for data integrity |
+| `internal/cli/` | **SHOULD TEST** | Command handlers - test via mocked dependencies |
+| `internal/tui/` | **SHOULD TEST** | Pure functions and state logic (NOT render functions) |
+| `internal/mocks/` | **SHOULD TEST** | Verify mock behavior matches contracts |
+| `internal/adapters/` | **DO NOT TEST** | Thin wrappers around stdlib/OS - tested via integration |
+| `internal/launchd/` | **DO NOT TEST** | macOS-specific system calls requiring permissions |
+| `internal/ports/` | **DO NOT TEST** | Interface definitions only |
+| `render*` functions | **DO NOT TEST** | UI display strings - brittle, low value |
+
+### Coverage Targets (Testable Code Only)
+
+| Package | Target | Rationale |
+|---------|--------|-----------|
+| `backup` | 80%+ | Core backup logic |
+| `config` | 80%+ | Configuration handling |
+| `manifest` | 85%+ | Data integrity critical |
+| `recovery` | 80%+ | Recovery logic |
+| `cli` | 50%+ | Command wrappers |
+| `tui` (non-render) | 50%+ | State management |
+
+### What NOT to Test
+
+1. **Adapter implementations** (`internal/adapters/*`)
+   - Thin wrappers around `os`, `archive/zip`, `os/exec`
+   - Testing duplicates stdlib testing
+   - Covered by integration tests
+
+2. **Launchd operations** (`internal/launchd/`)
+   - Requires macOS-specific permissions
+   - Requires launchctl execution
+   - Tested manually
+
+3. **Render functions** (any `render*` or `View()` methods in TUI)
+   - Output is visual formatting
+   - Tests are brittle (break on style changes)
+   - Low value relative to effort
+
+4. **Interface definitions** (`internal/ports/`)
+   - No logic to test
+   - Contracts verified by implementations
+
+### Test Patterns
+
+Use table-driven tests for functions with multiple input scenarios:
+
+```go
+func TestTruncate(t *testing.T) {
+    tests := []struct {
+        name     string
+        input    string
+        maxLen   int
+        expected string
+    }{
+        {"short string", "hello", 10, "hello"},
+        {"exact length", "hello", 5, "hello"},
+        {"truncated", "hello world", 8, "hello..."},
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            got := truncate(tt.input, tt.maxLen)
+            if got != tt.expected {
+                t.Errorf("truncate(%q, %d) = %q, want %q",
+                    tt.input, tt.maxLen, got, tt.expected)
+            }
+        })
+    }
+}
+```
+
 ## Making Changes
 
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feature/my-feature`
 3. Make your changes
 4. Run tests: `make test`
-5. Commit with a descriptive message
-6. Push to your fork
-7. Open a Pull Request
+5. Run linter: `make lint`
+6. Commit with a descriptive message
+7. Push to your fork
+8. Open a Pull Request
 
 ## Code Style
 
 - Follow standard Go conventions
 - Run `make lint` before submitting (requires golangci-lint)
-- Add tests for new functionality
+- Add tests for new functionality (see Testing Policy above)
 - Update documentation as needed
 
 ## Pull Request Guidelines

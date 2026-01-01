@@ -108,7 +108,7 @@ func (s *Service) HasChanges(projectPath string, lastBackup *manifest.BackupEntr
 
 	// Fallback: check mtime of any file newer than last backup
 	hasNewer := false
-	s.fs.Walk(projectPath, func(path string, info os.FileInfo, err error) error {
+	_ = s.fs.Walk(projectPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}

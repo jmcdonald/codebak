@@ -117,7 +117,7 @@ func listZipFiles(zipPath string) (map[string]fileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	files := make(map[string]fileInfo)
 	for _, f := range r.File {
@@ -163,7 +163,7 @@ func ReadZipFile(zipPath, filePath, projectName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	// Look for the file with project prefix
 	targetPath := projectName + "/" + filePath
@@ -282,11 +282,6 @@ func convertToLineDiff(content1, content2 string, diffs []diffmatchpatch.Diff) [
 	lines2 := strings.Split(content2, "\n")
 
 	// Simple line-by-line comparison for cleaner output
-	maxLines := len(lines1)
-	if len(lines2) > maxLines {
-		maxLines = len(lines2)
-	}
-
 	i, j := 0, 0
 	for i < len(lines1) || j < len(lines2) {
 		if i < len(lines1) && j < len(lines2) && lines1[i] == lines2[j] {

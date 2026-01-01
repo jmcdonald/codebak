@@ -98,7 +98,7 @@ func Install(hour, minute int) error {
 	}
 
 	if err := tmpl.Execute(f, config); err != nil {
-		f.Close()
+		_ = f.Close() // Best effort cleanup on error
 		return fmt.Errorf("writing plist: %w", err)
 	}
 

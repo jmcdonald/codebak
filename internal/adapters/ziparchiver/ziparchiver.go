@@ -95,7 +95,7 @@ func (a *ZipArchiver) Create(destPath, sourceDir string, exclude []string) (int,
 		}
 
 		_, copyErr := io.Copy(writer, file)
-		file.Close()
+		_ = file.Close() // Explicitly ignore close error - data already copied
 
 		if copyErr != nil {
 			return nil
@@ -107,7 +107,7 @@ func (a *ZipArchiver) Create(destPath, sourceDir string, exclude []string) (int,
 
 	// Close zip writer first to flush data
 	if closeErr := w.Close(); closeErr != nil {
-		zipFile.Close()
+		_ = zipFile.Close() // Best effort cleanup on error path
 		return 0, fmt.Errorf("closing zip writer: %w", closeErr)
 	}
 
@@ -125,7 +125,7 @@ func (a *ZipArchiver) Extract(zipPath, destDir string) error {
 	if err != nil {
 		return err
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	// Get cleaned absolute path for destination
 	absDestDir, err := filepath.Abs(destDir)
@@ -174,13 +174,13 @@ func extractFile(f *zip.File, destPath string) error {
 	if err != nil {
 		return err
 	}
-	defer outFile.Close()
+	defer func() { _ = outFile.Close() }()
 
 	rc, err := f.Open()
 	if err != nil {
 		return err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	_, err = io.Copy(outFile, rc)
 	return err
@@ -205,7 +205,7 @@ func (a *ZipArchiver) List(zipPath string) (map[string]ports.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	files := make(map[string]ports.FileInfo)
 	for _, f := range r.File {
@@ -234,7 +234,7 @@ func (a *ZipArchiver) ReadFile(zipPath, filePath, projectName string) (string, e
 	if err != nil {
 		return "", err
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	// Look for the file with project prefix
 	targetPath := filepath.Join(projectName, filePath)
@@ -245,7 +245,7 @@ func (a *ZipArchiver) ReadFile(zipPath, filePath, projectName string) (string, e
 			if err != nil {
 				return "", err
 			}
-			defer rc.Close()
+			defer func() { _ = rc.Close() }()
 
 			content, err := io.ReadAll(rc)
 			if err != nil {

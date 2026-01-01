@@ -742,10 +742,10 @@ func (m *Model) renderDiffSelectView() string {
 
 	// Status
 	b.WriteString("\n")
-	selected := len(m.diffSelections)
-	if selected == 0 {
+	switch len(m.diffSelections) {
+	case 0:
 		b.WriteString(dimStyle.Render("Select first version..."))
-	} else if selected == 1 {
+	case 1:
 		b.WriteString(dimStyle.Render("Select second version..."))
 	}
 	b.WriteString("\n")
@@ -1000,16 +1000,5 @@ func relativeTime(t time.Time) string {
 		return fmt.Sprintf("%dd ago", int(diff.Hours()/24))
 	default:
 		return t.Format("Jan 2")
-	}
-}
-
-// Ensure we handle status messages
-func (m *Model) handleStatusMsg(msg statusMsg) {
-	m.statusMsg = msg.msg
-	m.statusErr = msg.err
-	// Reload projects to reflect changes
-	_ = m.loadProjects()
-	if m.view == VersionsView {
-		_ = m.loadVersions()
 	}
 }

@@ -1,0 +1,30 @@
+# golangci-lint configuration for codebak
+# Run with: golangci-lint run ./...
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    errcheck:
+      # Ignore fmt.Fprint* - standard pattern in CLI applications
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Closer).Close
+
+  exclusions:
+    # Exclude test files from errcheck
+    rules:
+      - path: "(.+)_test\\.go"
+        linters:
+          - errcheck
