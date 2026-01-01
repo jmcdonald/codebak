@@ -8,6 +8,7 @@
     <a href="https://github.com/mcdonaldj/codebak/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
     <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat-square&logo=go" alt="Go"></a>
     <a href="https://github.com/mcdonaldj/codebak/actions"><img src="https://img.shields.io/github/actions/workflow/status/mcdonaldj/codebak/ci.yml?style=flat-square" alt="Build"></a>
+    <a href="https://codecov.io/gh/mcdonaldj/codebak"><img src="https://img.shields.io/codecov/c/github/mcdonaldj/codebak?style=flat-square&logo=codecov" alt="Coverage"></a>
   </p>
 </p>
 
