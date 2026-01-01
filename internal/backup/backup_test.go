@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mcdonaldj/codebak/internal/adapters/ziparchiver"
 	"github.com/mcdonaldj/codebak/internal/config"
 	"github.com/mcdonaldj/codebak/internal/manifest"
 )
@@ -42,11 +43,12 @@ func TestCreateZipRoundTrip(t *testing.T) {
 		}
 	}
 
-	// Create zip
+	// Create zip using archiver adapter
+	archiver := ziparchiver.New()
 	zipPath := filepath.Join(tempDir, "backup.zip")
-	fileCount, err := createZip(sourceDir, zipPath, nil)
+	fileCount, err := archiver.Create(zipPath, sourceDir, nil)
 	if err != nil {
-		t.Fatalf("createZip failed: %v", err)
+		t.Fatalf("archiver.Create failed: %v", err)
 	}
 
 	if fileCount != len(testFiles) {
@@ -105,12 +107,13 @@ func TestCreateZipExclusions(t *testing.T) {
 		}
 	}
 
-	// Create zip with exclusions
+	// Create zip with exclusions using archiver adapter
+	archiver := ziparchiver.New()
 	zipPath := filepath.Join(tempDir, "backup.zip")
 	exclude := []string{"node_modules", ".venv", "build", ".DS_Store"}
-	fileCount, err := createZip(sourceDir, zipPath, exclude)
+	fileCount, err := archiver.Create(zipPath, sourceDir, exclude)
 	if err != nil {
-		t.Fatalf("createZip failed: %v", err)
+		t.Fatalf("archiver.Create failed: %v", err)
 	}
 
 	// Only main.go should be included

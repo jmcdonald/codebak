@@ -1,18 +1,18 @@
 package recovery
 
 import (
-	"archive/zip"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/mcdonaldj/codebak/internal/adapters/osfs"
+	"github.com/mcdonaldj/codebak/internal/adapters/ziparchiver"
 	"github.com/mcdonaldj/codebak/internal/config"
 	"github.com/mcdonaldj/codebak/internal/manifest"
+	"github.com/mcdonaldj/codebak/internal/ports"
 )
 
+// RecoverOptions configures a recovery operation.
 type RecoverOptions struct {
 	Project string
 	Version string // YYYYMMDD-HHMMSS format, empty for latest
@@ -20,8 +20,30 @@ type RecoverOptions struct {
 	Archive bool   // Archive current before restore
 }
 
-// Verify checks the integrity of a backup by comparing checksums
-func Verify(cfg *config.Config, project, version string) error {
+// Service provides recovery operations with injected dependencies.
+type Service struct {
+	fs       ports.FileSystem
+	archiver ports.Archiver
+}
+
+// NewService creates a new recovery service with the given dependencies.
+func NewService(fs ports.FileSystem, archiver ports.Archiver) *Service {
+	return &Service{
+		fs:       fs,
+		archiver: archiver,
+	}
+}
+
+// NewDefaultService creates a recovery service with real production dependencies.
+func NewDefaultService() *Service {
+	return NewService(
+		osfs.New(),
+		ziparchiver.New(),
+	)
+}
+
+// Verify checks the integrity of a backup by comparing checksums.
+func (s *Service) Verify(cfg *config.Config, project, version string) error {
 	backupDir := config.ExpandPath(cfg.BackupDir)
 
 	m, err := manifest.Load(backupDir, project)
@@ -63,8 +85,8 @@ func Verify(cfg *config.Config, project, version string) error {
 	return nil
 }
 
-// Recover restores a project from backup
-func Recover(cfg *config.Config, opts RecoverOptions) error {
+// Recover restores a project from backup.
+func (s *Service) Recover(cfg *config.Config, opts RecoverOptions) error {
 	sourceDir := config.ExpandPath(cfg.SourceDir)
 	backupDir := config.ExpandPath(cfg.BackupDir)
 	projectPath := filepath.Join(sourceDir, opts.Project)
@@ -97,22 +119,22 @@ func Recover(cfg *config.Config, opts RecoverOptions) error {
 
 	// Verify checksum before recovery
 	zipPath := filepath.Join(backupDir, opts.Project, entry.File)
-	if err := Verify(cfg, opts.Project, opts.Version); err != nil {
+	if err := s.Verify(cfg, opts.Project, opts.Version); err != nil {
 		return fmt.Errorf("verification failed: %w", err)
 	}
 
 	// Handle existing project directory
-	if _, err := os.Stat(projectPath); err == nil {
+	if _, err := s.fs.Stat(projectPath); err == nil {
 		if opts.Wipe {
 			// Delete current
-			if err := os.RemoveAll(projectPath); err != nil {
+			if err := s.fs.RemoveAll(projectPath); err != nil {
 				return fmt.Errorf("removing current project: %w", err)
 			}
 		} else if opts.Archive {
 			// Archive current first
 			archiveName := fmt.Sprintf("%s-archived-%s", opts.Project, time.Now().Format("20060102-150405"))
 			archivePath := filepath.Join(sourceDir, archiveName)
-			if err := os.Rename(projectPath, archivePath); err != nil {
+			if err := s.fs.Rename(projectPath, archivePath); err != nil {
 				return fmt.Errorf("archiving current project: %w", err)
 			}
 		} else {
@@ -120,99 +142,16 @@ func Recover(cfg *config.Config, opts RecoverOptions) error {
 		}
 	}
 
-	// Extract zip
-	if err := extractZip(zipPath, sourceDir); err != nil {
+	// Extract zip using archiver
+	if err := s.archiver.Extract(zipPath, sourceDir); err != nil {
 		return fmt.Errorf("extracting backup: %w", err)
 	}
 
 	return nil
 }
 
-// extractZip extracts a zip file to the destination directory
-func extractZip(zipPath, destDir string) error {
-	r, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-
-	// Get cleaned absolute path for destination
-	absDestDir, err := filepath.Abs(destDir)
-	if err != nil {
-		return fmt.Errorf("resolving destination path: %w", err)
-	}
-	absDestDir = filepath.Clean(absDestDir)
-
-	for _, f := range r.File {
-		// SECURITY: Block symlinks to prevent symlink attacks
-		if f.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symlinks not supported in backups: %s", f.Name)
-		}
-
-		fpath := filepath.Join(destDir, f.Name)
-
-		// SECURITY: Check for ZipSlip vulnerability using cleaned absolute paths
-		if !isWithinDir(absDestDir, fpath) {
-			return fmt.Errorf("invalid file path (path traversal detected): %s", f.Name)
-		}
-
-		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(fpath, os.ModePerm); err != nil {
-				return fmt.Errorf("creating directory %s: %w", fpath, err)
-			}
-			continue
-		}
-
-		// Create parent directories
-		if err := os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
-			return fmt.Errorf("creating parent directory for %s: %w", fpath, err)
-		}
-
-		// Create file
-		if err := extractFile(f, fpath); err != nil {
-			return fmt.Errorf("extracting %s: %w", f.Name, err)
-		}
-	}
-
-	return nil
-}
-
-// extractFile extracts a single file from the zip
-func extractFile(f *zip.File, destPath string) error {
-	outFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-	if err != nil {
-		return err
-	}
-	defer outFile.Close()
-
-	rc, err := f.Open()
-	if err != nil {
-		return err
-	}
-	defer rc.Close()
-
-	_, err = io.Copy(outFile, rc)
-	return err
-}
-
-// isWithinDir checks if the target path is within the base directory
-// SECURITY: Uses cleaned absolute paths to prevent path traversal attacks
-func isWithinDir(absBaseDir, targetPath string) bool {
-	absTarget, err := filepath.Abs(targetPath)
-	if err != nil {
-		return false
-	}
-	absTarget = filepath.Clean(absTarget)
-
-	// Ensure target is within base directory
-	// Add separator to prevent matching partial directory names
-	// e.g., /home/user vs /home/username
-	return strings.HasPrefix(absTarget, absBaseDir+string(filepath.Separator)) ||
-		absTarget == absBaseDir
-}
-
-// ListVersions returns all backup versions for a project
-func ListVersions(cfg *config.Config, project string) ([]manifest.BackupEntry, error) {
+// ListVersions returns all backup versions for a project.
+func (s *Service) ListVersions(cfg *config.Config, project string) ([]manifest.BackupEntry, error) {
 	backupDir := config.ExpandPath(cfg.BackupDir)
 
 	m, err := manifest.Load(backupDir, project)
@@ -221,4 +160,28 @@ func ListVersions(cfg *config.Config, project string) ([]manifest.BackupEntry, e
 	}
 
 	return m.Backups, nil
+}
+
+// ============================================================================
+// Backward-compatible package-level functions using default service
+// ============================================================================
+
+var defaultService = NewDefaultService()
+
+// Verify checks the integrity of a backup by comparing checksums.
+// Uses the default production dependencies.
+func Verify(cfg *config.Config, project, version string) error {
+	return defaultService.Verify(cfg, project, version)
+}
+
+// Recover restores a project from backup.
+// Uses the default production dependencies.
+func Recover(cfg *config.Config, opts RecoverOptions) error {
+	return defaultService.Recover(cfg, opts)
+}
+
+// ListVersions returns all backup versions for a project.
+// Uses the default production dependencies.
+func ListVersions(cfg *config.Config, project string) ([]manifest.BackupEntry, error) {
+	return defaultService.ListVersions(cfg, project)
 }

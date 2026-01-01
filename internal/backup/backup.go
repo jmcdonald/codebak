@@ -1,19 +1,21 @@
 package backup
 
 import (
-	"archive/zip"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/mcdonaldj/codebak/internal/adapters/execgit"
+	"github.com/mcdonaldj/codebak/internal/adapters/osfs"
+	"github.com/mcdonaldj/codebak/internal/adapters/ziparchiver"
 	"github.com/mcdonaldj/codebak/internal/config"
 	"github.com/mcdonaldj/codebak/internal/manifest"
+	"github.com/mcdonaldj/codebak/internal/ports"
 )
 
+// BackupResult contains the result of a backup operation.
 type BackupResult struct {
 	Project   string
 	ZipPath   string
@@ -25,9 +27,40 @@ type BackupResult struct {
 	Error     error
 }
 
-// ListProjects returns all directories in the source directory
-func ListProjects(sourceDir string) ([]string, error) {
-	entries, err := os.ReadDir(sourceDir)
+// ZipResult contains results from createZip including any skipped files.
+type ZipResult struct {
+	FileCount int
+	Skipped   []string
+}
+
+// Service provides backup operations with injected dependencies.
+type Service struct {
+	fs       ports.FileSystem
+	git      ports.GitClient
+	archiver ports.Archiver
+}
+
+// NewService creates a new backup service with the given dependencies.
+func NewService(fs ports.FileSystem, git ports.GitClient, archiver ports.Archiver) *Service {
+	return &Service{
+		fs:       fs,
+		git:      git,
+		archiver: archiver,
+	}
+}
+
+// NewDefaultService creates a backup service with real production dependencies.
+func NewDefaultService() *Service {
+	return NewService(
+		osfs.New(),
+		execgit.New(),
+		ziparchiver.New(),
+	)
+}
+
+// ListProjects returns all directories in the source directory.
+func (s *Service) ListProjects(sourceDir string) ([]string, error) {
+	entries, err := s.fs.ReadDir(sourceDir)
 	if err != nil {
 		return nil, err
 	}
@@ -41,18 +74,12 @@ func ListProjects(sourceDir string) ([]string, error) {
 	return projects, nil
 }
 
-// GetGitHead returns the current HEAD commit hash for a git repo
-func GetGitHead(projectPath string) string {
-	cmd := exec.Command("git", "rev-parse", "HEAD")
-	cmd.Dir = projectPath
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
+// GetGitHead returns the current HEAD commit hash for a git repo.
+func (s *Service) GetGitHead(projectPath string) string {
+	return s.git.GetHead(projectPath)
 }
 
-// shortHash returns the first 7 characters of a hash, or the full hash if shorter
+// shortHash returns the first 7 characters of a hash, or the full hash if shorter.
 func shortHash(hash string) string {
 	if len(hash) > 7 {
 		return hash[:7]
@@ -60,18 +87,17 @@ func shortHash(hash string) string {
 	return hash
 }
 
-// HasChanges checks if project has changed since last backup
-func HasChanges(projectPath string, lastBackup *manifest.BackupEntry) (bool, string) {
+// HasChanges checks if project has changed since last backup.
+func (s *Service) HasChanges(projectPath string, lastBackup *manifest.BackupEntry) (bool, string) {
 	// If no previous backup, definitely has changes
 	if lastBackup == nil {
 		return true, "no previous backup"
 	}
 
 	// Check if it's a git repo
-	gitDir := filepath.Join(projectPath, ".git")
-	if _, err := os.Stat(gitDir); err == nil {
+	if s.git.IsRepo(projectPath) {
 		// It's a git repo - compare HEAD
-		currentHead := GetGitHead(projectPath)
+		currentHead := s.git.GetHead(projectPath)
 		if currentHead != "" && currentHead != lastBackup.GitHead {
 			return true, fmt.Sprintf("git HEAD changed: %s -> %s", shortHash(lastBackup.GitHead), shortHash(currentHead))
 		}
@@ -82,7 +108,7 @@ func HasChanges(projectPath string, lastBackup *manifest.BackupEntry) (bool, str
 
 	// Fallback: check mtime of any file newer than last backup
 	hasNewer := false
-	filepath.Walk(projectPath, func(path string, info os.FileInfo, err error) error {
+	s.fs.Walk(projectPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -99,7 +125,7 @@ func HasChanges(projectPath string, lastBackup *manifest.BackupEntry) (bool, str
 	return false, "no changes detected"
 }
 
-// shouldExclude checks if a path should be excluded
+// shouldExclude checks if a path should be excluded.
 func shouldExclude(path string, excludePatterns []string) bool {
 	base := filepath.Base(path)
 	for _, pattern := range excludePatterns {
@@ -115,8 +141,8 @@ func shouldExclude(path string, excludePatterns []string) bool {
 	return false
 }
 
-// BackupProject creates a zip backup of a single project
-func BackupProject(cfg *config.Config, project string) BackupResult {
+// BackupProject creates a zip backup of a single project.
+func (s *Service) BackupProject(cfg *config.Config, project string) BackupResult {
 	sourceDir := config.ExpandPath(cfg.SourceDir)
 	backupDir := config.ExpandPath(cfg.BackupDir)
 	projectPath := filepath.Join(sourceDir, project)
@@ -124,7 +150,7 @@ func BackupProject(cfg *config.Config, project string) BackupResult {
 	result := BackupResult{Project: project}
 
 	// Check if project exists
-	if _, err := os.Stat(projectPath); os.IsNotExist(err) {
+	if _, err := s.fs.Stat(projectPath); err != nil {
 		result.Error = fmt.Errorf("project not found: %s", projectPath)
 		return result
 	}
@@ -138,7 +164,7 @@ func BackupProject(cfg *config.Config, project string) BackupResult {
 	m.Source = projectPath
 
 	// Check for changes
-	hasChanges, reason := HasChanges(projectPath, m.LatestBackup())
+	hasChanges, reason := s.HasChanges(projectPath, m.LatestBackup())
 	if !hasChanges {
 		result.Skipped = true
 		result.Reason = reason
@@ -147,7 +173,7 @@ func BackupProject(cfg *config.Config, project string) BackupResult {
 
 	// Create backup directory
 	projectBackupDir := filepath.Join(backupDir, project)
-	if err := os.MkdirAll(projectBackupDir, 0755); err != nil {
+	if err := s.fs.MkdirAll(projectBackupDir, 0755); err != nil {
 		result.Error = fmt.Errorf("creating backup dir: %w", err)
 		return result
 	}
@@ -157,15 +183,15 @@ func BackupProject(cfg *config.Config, project string) BackupResult {
 	zipName := fmt.Sprintf("%s.zip", timestamp)
 	zipPath := filepath.Join(projectBackupDir, zipName)
 
-	// Create zip file
-	fileCount, err := createZip(projectPath, zipPath, cfg.Exclude)
+	// Create zip file using archiver
+	fileCount, err := s.archiver.Create(zipPath, projectPath, cfg.Exclude)
 	if err != nil {
 		result.Error = fmt.Errorf("creating zip: %w", err)
 		return result
 	}
 
 	// Get zip file info
-	zipInfo, err := os.Stat(zipPath)
+	zipInfo, err := s.fs.Stat(zipPath)
 	if err != nil {
 		result.Error = fmt.Errorf("stat zip: %w", err)
 		return result
@@ -184,7 +210,7 @@ func BackupProject(cfg *config.Config, project string) BackupResult {
 		SHA256:    checksum,
 		SizeBytes: zipInfo.Size(),
 		CreatedAt: time.Now(),
-		GitHead:   GetGitHead(projectPath),
+		GitHead:   s.git.GetHead(projectPath),
 		FileCount: fileCount,
 		Excluded:  cfg.Exclude,
 	}
@@ -211,126 +237,25 @@ func BackupProject(cfg *config.Config, project string) BackupResult {
 	return result
 }
 
-// ZipResult contains results from createZip including any skipped files
-type ZipResult struct {
-	FileCount int
-	Skipped   []string
-}
-
-// createZip creates a zip archive of the source directory
-func createZip(sourceDir, zipPath string, exclude []string) (int, error) {
-	zipFile, err := os.Create(zipPath)
-	if err != nil {
-		return 0, err
-	}
-
-	w := zip.NewWriter(zipFile)
-	fileCount := 0
-	baseName := filepath.Base(sourceDir)
-	var skipped []string
-
-	walkErr := filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			// Track skipped files instead of silently ignoring
-			skipped = append(skipped, path)
-			return nil
-		}
-
-		// Check exclusions
-		if shouldExclude(path, exclude) {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// Get relative path
-		relPath, err := filepath.Rel(sourceDir, path)
-		if err != nil {
-			skipped = append(skipped, path)
-			return nil
-		}
-
-		// Prefix with project name
-		archivePath := filepath.Join(baseName, relPath)
-
-		if info.IsDir() {
-			return nil // Directories are created implicitly
-		}
-
-		// Create file header
-		header, err := zip.FileInfoHeader(info)
-		if err != nil {
-			skipped = append(skipped, path)
-			return nil
-		}
-		header.Name = archivePath
-		header.Method = zip.Deflate
-
-		writer, err := w.CreateHeader(header)
-		if err != nil {
-			skipped = append(skipped, path)
-			return nil
-		}
-
-		// Copy file content
-		file, err := os.Open(path)
-		if err != nil {
-			skipped = append(skipped, path)
-			return nil
-		}
-
-		_, copyErr := io.Copy(writer, file)
-		file.Close() // Close immediately, don't defer in loop
-
-		if copyErr != nil {
-			skipped = append(skipped, path)
-			return nil
-		}
-
-		fileCount++
-		return nil
-	})
-
-	// Close zip writer first to flush data
-	if closeErr := w.Close(); closeErr != nil {
-		zipFile.Close()
-		return 0, fmt.Errorf("closing zip writer: %w", closeErr)
-	}
-
-	// Then close the file
-	if closeErr := zipFile.Close(); closeErr != nil {
-		return 0, fmt.Errorf("closing zip file: %w", closeErr)
-	}
-
-	// Log skipped files if any (for debugging)
-	if len(skipped) > 0 {
-		// Could log these somewhere or add to result
-		_ = skipped
-	}
-
-	return fileCount, walkErr
-}
-
-// RunBackup backs up all changed projects
-func RunBackup(cfg *config.Config) ([]BackupResult, error) {
+// RunBackup backs up all changed projects.
+func (s *Service) RunBackup(cfg *config.Config) ([]BackupResult, error) {
 	sourceDir := config.ExpandPath(cfg.SourceDir)
 
-	projects, err := ListProjects(sourceDir)
+	projects, err := s.ListProjects(sourceDir)
 	if err != nil {
 		return nil, err
 	}
 
 	var results []BackupResult
 	for _, project := range projects {
-		result := BackupProject(cfg, project)
+		result := s.BackupProject(cfg, project)
 		results = append(results, result)
 	}
 
 	return results, nil
 }
 
-// FormatSize formats bytes as human-readable
+// FormatSize formats bytes as human-readable.
 func FormatSize(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {
@@ -342,4 +267,40 @@ func FormatSize(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+// ============================================================================
+// Backward-compatible package-level functions using default service
+// ============================================================================
+
+var defaultService = NewDefaultService()
+
+// ListProjects returns all directories in the source directory.
+// Uses the default production dependencies.
+func ListProjects(sourceDir string) ([]string, error) {
+	return defaultService.ListProjects(sourceDir)
+}
+
+// GetGitHead returns the current HEAD commit hash for a git repo.
+// Uses the default production dependencies.
+func GetGitHead(projectPath string) string {
+	return defaultService.GetGitHead(projectPath)
+}
+
+// HasChanges checks if project has changed since last backup.
+// Uses the default production dependencies.
+func HasChanges(projectPath string, lastBackup *manifest.BackupEntry) (bool, string) {
+	return defaultService.HasChanges(projectPath, lastBackup)
+}
+
+// BackupProject creates a zip backup of a single project.
+// Uses the default production dependencies.
+func BackupProject(cfg *config.Config, project string) BackupResult {
+	return defaultService.BackupProject(cfg, project)
+}
+
+// RunBackup backs up all changed projects.
+// Uses the default production dependencies.
+func RunBackup(cfg *config.Config) ([]BackupResult, error) {
+	return defaultService.RunBackup(cfg)
 }

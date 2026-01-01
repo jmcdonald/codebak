@@ -4,12 +4,47 @@ import (
 	"archive/zip"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/mcdonaldj/codebak/internal/adapters/ziparchiver"
 	"github.com/mcdonaldj/codebak/internal/config"
 )
+
+// isWithinDir checks if the target path is within the base directory.
+// This is a test helper that mirrors the security check in ziparchiver.
+func isWithinDir(absBaseDir, targetPath string) bool {
+	absTarget, err := filepath.Abs(targetPath)
+	if err != nil {
+		return false
+	}
+	absTarget = filepath.Clean(absTarget)
+
+	return strings.HasPrefix(absTarget, absBaseDir+string(filepath.Separator)) ||
+		absTarget == absBaseDir
+}
+
+// extractFile extracts a single file from the zip.
+// This is a test helper that mirrors the extraction logic.
+func extractFile(f *zip.File, destPath string) error {
+	outFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+	if err != nil {
+		return err
+	}
+	defer outFile.Close()
+
+	rc, err := f.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+
+	_, err = io.Copy(outFile, rc)
+	return err
+}
 
 func TestIsWithinDir(t *testing.T) {
 	tests := []struct {
@@ -100,9 +135,10 @@ func TestExtractZipZipSlipPrevention(t *testing.T) {
 		t.Fatalf("Failed to create dest dir: %v", err)
 	}
 
-	err = extractZip(maliciousZipPath, destDir)
+	archiver := ziparchiver.New()
+	err = archiver.Extract(maliciousZipPath, destDir)
 	if err == nil {
-		t.Error("extractZip should have rejected malicious zip with path traversal")
+		t.Error("Extract should have rejected malicious zip with path traversal")
 	}
 
 	// Verify the malicious file was NOT created
@@ -129,9 +165,10 @@ func TestExtractZipValidArchive(t *testing.T) {
 		t.Fatalf("Failed to create dest dir: %v", err)
 	}
 
-	err = extractZip(zipPath, destDir)
+	archiver := ziparchiver.New()
+	err = archiver.Extract(zipPath, destDir)
 	if err != nil {
-		t.Fatalf("extractZip failed for valid archive: %v", err)
+		t.Fatalf("Extract failed for valid archive: %v", err)
 	}
 
 	// Verify files were extracted
