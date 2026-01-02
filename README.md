@@ -1,7 +1,10 @@
 <p align="center">
   <h1 align="center">codebak</h1>
   <p align="center">
-    <strong>Incremental code backup with a beautiful TUI</strong>
+    <strong>A terminal UI for automated code backups with version diffing and recovery</strong>
+  </p>
+  <p align="center">
+    <em>Smart change detection • Browse & compare versions • One-key recovery</em>
   </p>
   <p align="center">
     <a href="https://github.com/jmcdonald/codebak/releases"><img src="https://img.shields.io/badge/release-v0.6.0-blue?style=flat-square" alt="Release"></a>
