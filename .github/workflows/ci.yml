@@ -40,6 +40,7 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   lint:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -56,6 +57,7 @@ jobs:
           version: v2.7.2
 
   build:
+    needs: lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -70,6 +72,7 @@ jobs:
         run: go build -v ./...
 
   security:
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
