@@ -36,4 +36,5 @@ jobs:
       - name: Run gosec security scanner
         uses: securego/gosec@master
         with:
-          args: ./...
+          # Exclude G301/G306: Backup utility intentionally uses 0755/0644 for readable backups
+          args: -exclude=G301,G306 ./...
