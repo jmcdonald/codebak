@@ -19,8 +19,8 @@ import (
 type ConfigService interface {
 	Load() (*config.Config, error)
 	Save(cfg *config.Config) error
-	ConfigPath() string
-	DefaultConfig() *config.Config
+	ConfigPath() (string, error)
+	DefaultConfig() (*config.Config, error)
 }
 
 // BackupService provides backup operations for the CLI.
@@ -109,8 +109,8 @@ type defaultConfigService struct{}
 
 func (d *defaultConfigService) Load() (*config.Config, error) { return config.Load() }
 func (d *defaultConfigService) Save(cfg *config.Config) error { return cfg.Save() }
-func (d *defaultConfigService) ConfigPath() string            { return config.ConfigPath() }
-func (d *defaultConfigService) DefaultConfig() *config.Config { return config.DefaultConfig() }
+func (d *defaultConfigService) ConfigPath() (string, error)       { return config.ConfigPath() }
+func (d *defaultConfigService) DefaultConfig() (*config.Config, error) { return config.DefaultConfig() }
 
 // defaultBackupService wraps the backup package functions.
 type defaultBackupService struct{}
@@ -235,13 +235,24 @@ Config: ~/.codebak/config.yaml`)
 // InitConfig creates the default config file.
 func (c *CLI) InitConfig() {
 	svc := c.configSvc()
-	cfg := svc.DefaultConfig()
+	cfg, err := svc.DefaultConfig()
+	if err != nil {
+		fmt.Fprintf(c.Err, "Error: %v\n", err)
+		c.Exit(1)
+		return
+	}
 	if err := svc.Save(cfg); err != nil {
 		fmt.Fprintf(c.Err, "Error saving config: %v\n", err)
 		c.Exit(1)
 		return
 	}
-	fmt.Fprintf(c.Out, "Created config at %s\n", svc.ConfigPath())
+	path, err := svc.ConfigPath()
+	if err != nil {
+		fmt.Fprintf(c.Err, "Error: %v\n", err)
+		c.Exit(1)
+		return
+	}
+	fmt.Fprintf(c.Out, "Created config at %s\n", path)
 }
 
 // RunBackup runs the backup command.
@@ -358,10 +369,17 @@ func (c *CLI) ShowStatus() {
 		return
 	}
 
+	configPath, err := cfgSvc.ConfigPath()
+	if err != nil {
+		fmt.Fprintf(c.Err, "Error: %v\n", err)
+		c.Exit(1)
+		return
+	}
+
 	fmt.Fprintln(c.Out, "codebak status:")
 	fmt.Fprintf(c.Out, "  Source:  %s\n", cfg.SourceDir)
 	fmt.Fprintf(c.Out, "  Backup:  %s\n", cfg.BackupDir)
-	fmt.Fprintf(c.Out, "  Config:  %s\n", cfgSvc.ConfigPath())
+	fmt.Fprintf(c.Out, "  Config:  %s\n", configPath)
 
 	if launchdSvc.IsInstalled() {
 		loaded, _ := launchdSvc.Status()

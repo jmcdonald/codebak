@@ -33,7 +33,10 @@ type DiffResult struct {
 
 // ComputeDiff compares two backup versions and returns the differences
 func ComputeDiff(cfg *config.Config, project, version1, version2 string) (*DiffResult, error) {
-	backupDir := config.ExpandPath(cfg.BackupDir)
+	backupDir, err := config.ExpandPath(cfg.BackupDir)
+	if err != nil {
+		return nil, err
+	}
 
 	zip1Path := filepath.Join(backupDir, project, version1)
 	zip2Path := filepath.Join(backupDir, project, version2)
@@ -214,7 +217,10 @@ func IsBinaryContent(content string) bool {
 
 // ComputeFileDiff computes the line-by-line diff between two versions of a file
 func ComputeFileDiff(cfg *config.Config, project, version1, version2, filePath string, status rune) (*FileDiffResult, error) {
-	backupDir := config.ExpandPath(cfg.BackupDir)
+	backupDir, err := config.ExpandPath(cfg.BackupDir)
+	if err != nil {
+		return nil, err
+	}
 
 	zip1Path := filepath.Join(backupDir, project, version1+".zip")
 	zip2Path := filepath.Join(backupDir, project, version2+".zip")
@@ -226,7 +232,6 @@ func ComputeFileDiff(cfg *config.Config, project, version1, version2, filePath s
 	}
 
 	var content1, content2 string
-	var err error
 
 	// Read contents based on file status
 	switch status {

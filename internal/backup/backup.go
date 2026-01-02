@@ -143,11 +143,19 @@ func shouldExclude(path string, excludePatterns []string) bool {
 
 // BackupProject creates a zip backup of a single project.
 func (s *Service) BackupProject(cfg *config.Config, project string) BackupResult {
-	sourceDir := config.ExpandPath(cfg.SourceDir)
-	backupDir := config.ExpandPath(cfg.BackupDir)
-	projectPath := filepath.Join(sourceDir, project)
-
 	result := BackupResult{Project: project}
+
+	sourceDir, err := config.ExpandPath(cfg.SourceDir)
+	if err != nil {
+		result.Error = err
+		return result
+	}
+	backupDir, err := config.ExpandPath(cfg.BackupDir)
+	if err != nil {
+		result.Error = err
+		return result
+	}
+	projectPath := filepath.Join(sourceDir, project)
 
 	// Check if project exists
 	if _, err := s.fs.Stat(projectPath); err != nil {
@@ -239,7 +247,10 @@ func (s *Service) BackupProject(cfg *config.Config, project string) BackupResult
 
 // RunBackup backs up all changed projects.
 func (s *Service) RunBackup(cfg *config.Config) ([]BackupResult, error) {
-	sourceDir := config.ExpandPath(cfg.SourceDir)
+	sourceDir, err := config.ExpandPath(cfg.SourceDir)
+	if err != nil {
+		return nil, err
+	}
 
 	projects, err := s.ListProjects(sourceDir)
 	if err != nil {

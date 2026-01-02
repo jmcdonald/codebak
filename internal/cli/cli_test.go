@@ -19,10 +19,12 @@ import (
 
 // mockConfigService implements ConfigService for testing.
 type mockConfigService struct {
-	config     *config.Config
-	loadErr    error
-	saveErr    error
-	configPath string
+	config        *config.Config
+	loadErr       error
+	saveErr       error
+	configPath    string
+	configPathErr error
+	defaultCfgErr error
 }
 
 func newMockConfigService() *mockConfigService {
@@ -46,12 +48,18 @@ func (m *mockConfigService) Save(cfg *config.Config) error {
 	return m.saveErr
 }
 
-func (m *mockConfigService) ConfigPath() string {
-	return m.configPath
+func (m *mockConfigService) ConfigPath() (string, error) {
+	if m.configPathErr != nil {
+		return "", m.configPathErr
+	}
+	return m.configPath, nil
 }
 
-func (m *mockConfigService) DefaultConfig() *config.Config {
-	return m.config
+func (m *mockConfigService) DefaultConfig() (*config.Config, error) {
+	if m.defaultCfgErr != nil {
+		return nil, m.defaultCfgErr
+	}
+	return m.config, nil
 }
 
 // mockBackupService implements BackupService for testing.
@@ -1267,7 +1275,10 @@ func TestServiceInjectionPriority(t *testing.T) {
 
 	// The configSvc() should return our mock, not the default
 	svc := tc.configSvc()
-	path := svc.ConfigPath()
+	path, err := svc.ConfigPath()
+	if err != nil {
+		t.Fatalf("ConfigPath failed: %v", err)
+	}
 	if path != "/custom/path/config.yaml" {
 		t.Errorf("expected custom path, got %q", path)
 	}
@@ -1492,7 +1503,10 @@ func TestMockServicesImplementInterfaces(t *testing.T) {
 func TestDefaultConfigServiceConfigPath(t *testing.T) {
 	// This method doesn't touch the filesystem, safe to call
 	svc := &defaultConfigService{}
-	path := svc.ConfigPath()
+	path, err := svc.ConfigPath()
+	if err != nil {
+		t.Fatalf("ConfigPath failed: %v", err)
+	}
 	if path == "" {
 		t.Error("ConfigPath should return a non-empty path")
 	}
@@ -1504,7 +1518,10 @@ func TestDefaultConfigServiceConfigPath(t *testing.T) {
 func TestDefaultConfigServiceDefaultConfig(t *testing.T) {
 	// This method doesn't touch the filesystem, safe to call
 	svc := &defaultConfigService{}
-	cfg := svc.DefaultConfig()
+	cfg, err := svc.DefaultConfig()
+	if err != nil {
+		t.Fatalf("DefaultConfig failed: %v", err)
+	}
 	if cfg == nil {
 		t.Fatal("DefaultConfig should return a non-nil config")
 	}

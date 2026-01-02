@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,8 +9,10 @@ import (
 )
 
 func TestDefaultConfig(t *testing.T) {
-	cfg := DefaultConfig()
-
+	cfg, err := DefaultConfig()
+	if err != nil {
+		t.Fatalf("DefaultConfig failed: %v", err)
+	}
 	if cfg == nil {
 		t.Fatal("DefaultConfig returned nil")
 	}
@@ -220,7 +223,10 @@ func TestExpandPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			result := ExpandPath(tt.input)
+			result, err := ExpandPath(tt.input)
+			if err != nil {
+				t.Fatalf("ExpandPath(%q) failed: %v", tt.input, err)
+			}
 			if result != tt.expected {
 				t.Errorf("ExpandPath(%q) = %q, expected %q", tt.input, result, tt.expected)
 			}
@@ -229,24 +235,27 @@ func TestExpandPath(t *testing.T) {
 }
 
 func TestExpandPathEmptyString(t *testing.T) {
-	result := ExpandPath("")
+	result, err := ExpandPath("")
+	if err != nil {
+		t.Fatalf("ExpandPath failed: %v", err)
+	}
 	if result != "" {
 		t.Errorf("ExpandPath(\"\") = %q, expected empty string", result)
 	}
 }
 
 func TestConfigPath(t *testing.T) {
-	path := ConfigPath()
+	path, err := ConfigPath()
+	if err != nil {
+		t.Fatalf("ConfigPath failed: %v", err)
+	}
 	if path == "" {
 		t.Error("ConfigPath returned empty string")
 	}
 
-	// Should end with expected path
+	// Should be absolute path in .codebak directory
 	if !filepath.IsAbs(path) {
-		// In fallback mode (home unavailable), will be relative
-		if filepath.Base(filepath.Dir(path)) != ".codebak" {
-			t.Errorf("ConfigPath should be in .codebak directory, got %s", path)
-		}
+		t.Errorf("ConfigPath should be absolute, got %s", path)
 	}
 }
 
@@ -332,7 +341,10 @@ func TestExpandPathWithNoTilde(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			result := ExpandPath(tt.input)
+			result, err := ExpandPath(tt.input)
+			if err != nil {
+				t.Fatalf("ExpandPath(%q) failed: %v", tt.input, err)
+			}
 			if result != tt.expected {
 				t.Errorf("ExpandPath(%q) = %q, expected %q", tt.input, result, tt.expected)
 			}
@@ -341,7 +353,10 @@ func TestExpandPathWithNoTilde(t *testing.T) {
 }
 
 func TestDefaultConfigContainsAllFields(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg, err := DefaultConfig()
+	if err != nil {
+		t.Fatalf("DefaultConfig failed: %v", err)
+	}
 
 	// Verify all expected fields are populated
 	if cfg.SourceDir == "" {
@@ -444,7 +459,10 @@ func TestSaveMkdirAllError(t *testing.T) {
 
 func TestConfigPathDefault(t *testing.T) {
 	// Test with valid HOME
-	path := ConfigPath()
+	path, err := ConfigPath()
+	if err != nil {
+		t.Fatalf("ConfigPath failed: %v", err)
+	}
 	if path == "" {
 		t.Error("ConfigPath returned empty string")
 	}
@@ -458,7 +476,10 @@ func TestConfigPathDefault(t *testing.T) {
 
 func TestDefaultConfigHomeDir(t *testing.T) {
 	// Test with valid HOME - paths should be absolute
-	cfg := DefaultConfig()
+	cfg, err := DefaultConfig()
+	if err != nil {
+		t.Fatalf("DefaultConfig failed: %v", err)
+	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -480,7 +501,10 @@ func TestExpandPathTildeOnly(t *testing.T) {
 	}
 
 	// Test with just tilde
-	result := ExpandPath("~")
+	result, err := ExpandPath("~")
+	if err != nil {
+		t.Fatalf("ExpandPath(~) failed: %v", err)
+	}
 	// filepath.Join(home, "") returns home without trailing slash
 	expected := filepath.Join(home, "")
 	if result != expected {
@@ -488,9 +512,104 @@ func TestExpandPathTildeOnly(t *testing.T) {
 	}
 
 	// Test with tilde and path
-	result = ExpandPath("~/Documents")
+	result, err = ExpandPath("~/Documents")
+	if err != nil {
+		t.Fatalf("ExpandPath(~/Documents) failed: %v", err)
+	}
 	expected = filepath.Join(home, "Documents")
 	if result != expected {
 		t.Errorf("ExpandPath(~/Documents) = %q, expected %q", result, expected)
+	}
+}
+
+// ============================================================================
+// Tests for error paths when HOME is unavailable
+// ============================================================================
+
+func TestExpandPathNoHome(t *testing.T) {
+	// Save original HOME and clear it
+	origHome := os.Getenv("HOME")
+	os.Unsetenv("HOME")
+	defer os.Setenv("HOME", origHome)
+
+	// ExpandPath with tilde should fail without HOME
+	_, err := ExpandPath("~/code")
+	if err == nil {
+		t.Error("ExpandPath(~/code) should fail when HOME is not set")
+	}
+	if !errors.Is(err, ErrNoHomeDir) {
+		t.Errorf("Expected ErrNoHomeDir, got: %v", err)
+	}
+
+	// Non-tilde paths should still work
+	result, err := ExpandPath("/absolute/path")
+	if err != nil {
+		t.Errorf("ExpandPath(/absolute/path) should succeed: %v", err)
+	}
+	if result != "/absolute/path" {
+		t.Errorf("Expected /absolute/path, got %q", result)
+	}
+}
+
+func TestConfigPathNoHome(t *testing.T) {
+	// Save original HOME and clear it
+	origHome := os.Getenv("HOME")
+	os.Unsetenv("HOME")
+	defer os.Setenv("HOME", origHome)
+
+	// ConfigPath should fail without HOME
+	_, err := ConfigPath()
+	if err == nil {
+		t.Error("ConfigPath should fail when HOME is not set")
+	}
+	if !errors.Is(err, ErrNoHomeDir) {
+		t.Errorf("Expected ErrNoHomeDir, got: %v", err)
+	}
+}
+
+func TestDefaultConfigNoHome(t *testing.T) {
+	// Save original HOME and clear it
+	origHome := os.Getenv("HOME")
+	os.Unsetenv("HOME")
+	defer os.Setenv("HOME", origHome)
+
+	// DefaultConfig should fail without HOME
+	_, err := DefaultConfig()
+	if err == nil {
+		t.Error("DefaultConfig should fail when HOME is not set")
+	}
+	if !errors.Is(err, ErrNoHomeDir) {
+		t.Errorf("Expected ErrNoHomeDir, got: %v", err)
+	}
+}
+
+func TestLoadNoHome(t *testing.T) {
+	// Save original HOME and clear it
+	origHome := os.Getenv("HOME")
+	os.Unsetenv("HOME")
+	defer os.Setenv("HOME", origHome)
+
+	// Load should fail without HOME (can't find config path)
+	_, err := Load()
+	if err == nil {
+		t.Error("Load should fail when HOME is not set")
+	}
+}
+
+func TestSaveNoHome(t *testing.T) {
+	// Save original HOME and clear it
+	origHome := os.Getenv("HOME")
+	os.Unsetenv("HOME")
+	defer os.Setenv("HOME", origHome)
+
+	cfg := &Config{
+		SourceDir: "/source",
+		BackupDir: "/backup",
+	}
+
+	// Save should fail without HOME (can't find config path)
+	err := cfg.Save()
+	if err == nil {
+		t.Error("Save should fail when HOME is not set")
 	}
 }

@@ -26,8 +26,14 @@ func (s *Service) LoadConfig() (*config.Config, error) {
 
 // ListProjects returns all projects with their metadata.
 func (s *Service) ListProjects(cfg *config.Config) ([]ports.TUIProjectInfo, error) {
-	sourceDir := config.ExpandPath(cfg.SourceDir)
-	backupDir := config.ExpandPath(cfg.BackupDir)
+	sourceDir, err := config.ExpandPath(cfg.SourceDir)
+	if err != nil {
+		return nil, err
+	}
+	backupDir, err := config.ExpandPath(cfg.BackupDir)
+	if err != nil {
+		return nil, err
+	}
 
 	projects, err := backup.ListProjects(sourceDir)
 	if err != nil {
@@ -62,7 +68,10 @@ func (s *Service) ListProjects(cfg *config.Config) ([]ports.TUIProjectInfo, erro
 
 // ListVersions returns all backup versions for a project.
 func (s *Service) ListVersions(cfg *config.Config, project string) ([]ports.TUIVersionInfo, error) {
-	backupDir := config.ExpandPath(cfg.BackupDir)
+	backupDir, err := config.ExpandPath(cfg.BackupDir)
+	if err != nil {
+		return nil, err
+	}
 
 	mf, err := manifest.Load(backupDir, project)
 	if err != nil {
@@ -101,7 +110,10 @@ func (s *Service) RunBackup(cfg *config.Config, project string) ports.TUIBackupR
 
 // VerifyBackup verifies the latest backup of a project.
 func (s *Service) VerifyBackup(cfg *config.Config, project string) error {
-	backupDir := config.ExpandPath(cfg.BackupDir)
+	backupDir, err := config.ExpandPath(cfg.BackupDir)
+	if err != nil {
+		return err
+	}
 	mf, err := manifest.Load(backupDir, project)
 	if err != nil || len(mf.Backups) == 0 {
 		return fmt.Errorf("no backups to verify")
