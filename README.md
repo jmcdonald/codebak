@@ -4,7 +4,7 @@
     <strong>Incremental code backup with a beautiful TUI</strong>
   </p>
   <p align="center">
-    <a href="https://github.com/jmcdonald/codebak/releases"><img src="https://img.shields.io/badge/release-v0.5.0-blue?style=flat-square" alt="Release"></a>
+    <a href="https://github.com/jmcdonald/codebak/releases"><img src="https://img.shields.io/badge/release-v0.6.0-blue?style=flat-square" alt="Release"></a>
     <a href="https://github.com/jmcdonald/codebak/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
     <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat-square&logo=go" alt="Go"></a>
     <a href="https://github.com/jmcdonald/codebak/actions"><img src="https://img.shields.io/github/actions/workflow/status/jmcdonald/codebak/ci.yml?style=flat-square" alt="Build"></a>
