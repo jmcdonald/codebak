@@ -48,7 +48,7 @@ changelog:
 
 release:
   github:
-    owner: mcdonaldj
+    owner: jmcdonald
     name: codebak
   draft: false
   prerelease: auto
