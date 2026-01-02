@@ -1,11 +1,15 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
+
+// ErrNoHomeDir is returned when the home directory cannot be determined
+var ErrNoHomeDir = fmt.Errorf("cannot determine home directory: HOME environment variable not set")
 
 type Config struct {
 	SourceDir string   `yaml:"source_dir"`
@@ -18,10 +22,10 @@ type Config struct {
 	} `yaml:"retention"`
 }
 
-func DefaultConfig() *Config {
+func DefaultConfig() (*Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		home = "." // Fallback to current directory
+		return nil, fmt.Errorf("%w: %v", ErrNoHomeDir, err)
 	}
 	return &Config{
 		SourceDir: filepath.Join(home, "code"),
@@ -44,21 +48,28 @@ func DefaultConfig() *Config {
 		Retention: struct {
 			KeepLast int `yaml:"keep_last"`
 		}{KeepLast: 30},
-	}
+	}, nil
 }
 
-func ConfigPath() string {
+func ConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		home = "."
+		return "", fmt.Errorf("%w: %v", ErrNoHomeDir, err)
 	}
-	return filepath.Join(home, ".codebak", "config.yaml")
+	return filepath.Join(home, ".codebak", "config.yaml"), nil
 }
 
 func Load() (*Config, error) {
-	cfg := DefaultConfig()
+	cfg, err := DefaultConfig()
+	if err != nil {
+		return nil, err
+	}
 
-	path := ConfigPath()
+	path, err := ConfigPath()
+	if err != nil {
+		return nil, err
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -75,7 +86,10 @@ func Load() (*Config, error) {
 }
 
 func (c *Config) Save() error {
-	path := ConfigPath()
+	path, err := ConfigPath()
+	if err != nil {
+		return err
+	}
 
 	// Ensure directory exists
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -90,14 +104,15 @@ func (c *Config) Save() error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// ExpandPath expands ~ to home directory
-func ExpandPath(path string) string {
+// ExpandPath expands ~ to home directory. Returns error if path starts with ~
+// but home directory cannot be determined.
+func ExpandPath(path string) (string, error) {
 	if len(path) > 0 && path[0] == '~' {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return path // Return unexpanded if home unavailable
+			return "", fmt.Errorf("%w: cannot expand %q", ErrNoHomeDir, path)
 		}
-		return filepath.Join(home, path[1:])
+		return filepath.Join(home, path[1:]), nil
 	}
-	return path
+	return path, nil
 }

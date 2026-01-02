@@ -44,7 +44,10 @@ func NewDefaultService() *Service {
 
 // Verify checks the integrity of a backup by comparing checksums.
 func (s *Service) Verify(cfg *config.Config, project, version string) error {
-	backupDir := config.ExpandPath(cfg.BackupDir)
+	backupDir, err := config.ExpandPath(cfg.BackupDir)
+	if err != nil {
+		return err
+	}
 
 	m, err := manifest.Load(backupDir, project)
 	if err != nil {
@@ -87,8 +90,14 @@ func (s *Service) Verify(cfg *config.Config, project, version string) error {
 
 // Recover restores a project from backup.
 func (s *Service) Recover(cfg *config.Config, opts RecoverOptions) error {
-	sourceDir := config.ExpandPath(cfg.SourceDir)
-	backupDir := config.ExpandPath(cfg.BackupDir)
+	sourceDir, err := config.ExpandPath(cfg.SourceDir)
+	if err != nil {
+		return err
+	}
+	backupDir, err := config.ExpandPath(cfg.BackupDir)
+	if err != nil {
+		return err
+	}
 	projectPath := filepath.Join(sourceDir, opts.Project)
 
 	// Load manifest
@@ -152,7 +161,10 @@ func (s *Service) Recover(cfg *config.Config, opts RecoverOptions) error {
 
 // ListVersions returns all backup versions for a project.
 func (s *Service) ListVersions(cfg *config.Config, project string) ([]manifest.BackupEntry, error) {
-	backupDir := config.ExpandPath(cfg.BackupDir)
+	backupDir, err := config.ExpandPath(cfg.BackupDir)
+	if err != nil {
+		return nil, err
+	}
 
 	m, err := manifest.Load(backupDir, project)
 	if err != nil {
