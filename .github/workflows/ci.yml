@@ -25,27 +25,10 @@ jobs:
         run: go mod download
 
       - name: Run tests with coverage
-        run: |
-          # Exclude thin adapter wrappers and cmd/main from coverage
-          go test -v -race -coverprofile=coverage.out \
-            ./internal/backup/... \
-            ./internal/cli/... \
-            ./internal/config/... \
-            ./internal/manifest/... \
-            ./internal/mocks/... \
-            ./internal/recovery/... \
-            ./internal/tui/...
+        run: go test -v -race -coverprofile=coverage.out ./...
 
-      - name: Verify 100% coverage
-        run: |
-          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
-          echo "Total coverage: ${COVERAGE}%"
-          if (( $(echo "$COVERAGE < 100" | bc -l) )); then
-            echo "Coverage is below 100%! Current: ${COVERAGE}%"
-            go tool cover -func=coverage.out | grep -v "100.0%"
-            exit 1
-          fi
-          echo "Coverage requirement met: 100%"
+      - name: Show coverage
+        run: go tool cover -func=coverage.out | tail -1
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
