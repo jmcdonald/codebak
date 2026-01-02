@@ -68,3 +68,36 @@ jobs:
 
       - name: Build
         run: go build -v ./...
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for TruffleHog
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      - name: Check vulnerable dependencies
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: Scan for secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          extra_args: --only-verified
+
+      - name: Run gosec security scanner
+        uses: securego/gosec@master
+        with:
+          # Exclusions for backup utility:
+          # - G204: launchctl uses config-generated paths, not user input
+          # - G301/G306: Intentional 0755/0644 for readable backups
+          # - G304: Filesystem adapter must accept user paths
+          # - G305: False positive - ZipSlip protection in isWithinDir()
+          args: -exclude=G204,G301,G304,G305,G306 ./...
