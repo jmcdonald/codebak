@@ -1,0 +1,39 @@
+# Security CI workflow for codebak
+# Runs vulnerability scanning, static analysis, and secret detection
+
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for TruffleHog
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      - name: Check vulnerable dependencies
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: Scan for secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          extra_args: --only-verified
+
+      - name: Run gosec security scanner
+        uses: securego/gosec@master
+        with:
+          args: ./...
