@@ -22,6 +22,7 @@ const (
 	DiffSelectView // Selecting versions to compare
 	DiffResultView // Showing diff results (file list)
 	FileDiffView   // Showing actual file content diff
+	SettingsView   // Settings/configuration view
 )
 
 // ProjectItem represents a project in the list
@@ -70,6 +71,10 @@ type Model struct {
 	fileDiffScroll int             // Scroll offset in file diff view
 	diffSwapped    bool            // Whether versions are swapped (v2 on left)
 
+	// Settings view
+	settingsCursor int
+	prevView       View // View to return to after settings
+
 	// Status message
 	statusMsg string
 	statusErr bool
@@ -87,8 +92,8 @@ type keyMap struct {
 	Diff    key.Binding
 	Select  key.Binding
 	Swap    key.Binding
-	Quit    key.Binding
-	Help    key.Binding
+	Quit     key.Binding
+	Settings key.Binding
 }
 
 var keys = keyMap{
@@ -136,9 +141,9 @@ var keys = keyMap{
 		key.WithKeys("q", "ctrl+c"),
 		key.WithHelp("q", "quit"),
 	),
-	Help: key.NewBinding(
+	Settings: key.NewBinding(
 		key.WithKeys("?"),
-		key.WithHelp("?", "help"),
+		key.WithHelp("?", "settings"),
 	),
 }
 
@@ -317,6 +322,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.view = DiffResultView
 				m.fileDiffResult = nil
 				m.fileDiffScroll = 0
+			case SettingsView:
+				m.view = m.prevView
 			}
 
 		case key.Matches(msg, keys.Run):
@@ -340,6 +347,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, keys.Swap):
 			if m.view == FileDiffView && m.fileDiffResult != nil {
 				m.diffSwapped = !m.diffSwapped
+			}
+
+		case key.Matches(msg, keys.Settings):
+			if m.view != SettingsView {
+				m.prevView = m.view
+				m.view = SettingsView
+				m.settingsCursor = 0
 			}
 		}
 	}
@@ -388,6 +402,15 @@ func (m *Model) moveCursor(delta int) {
 			if m.fileDiffScroll > maxScroll {
 				m.fileDiffScroll = maxScroll
 			}
+		}
+	case SettingsView:
+		settingsCount := 4 // Number of settings options
+		m.settingsCursor += delta
+		if m.settingsCursor < 0 {
+			m.settingsCursor = 0
+		}
+		if m.settingsCursor >= settingsCount {
+			m.settingsCursor = settingsCount - 1
 		}
 	}
 }
@@ -504,6 +527,8 @@ func (m *Model) View() string {
 		content = m.renderDiffResultView()
 	case FileDiffView:
 		content = m.renderFileDiffView()
+	case SettingsView:
+		content = m.renderSettingsView()
 	}
 
 	return appStyle.Render(content)
@@ -582,9 +607,9 @@ func (m *Model) renderProjectsView() string {
 	}
 	b.WriteString("\n")
 
-	// Help
+	// Help (split footer with settings on right)
 	help := "[↑/↓] navigate  [enter] versions  [r] backup  [v] verify  [q] quit"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderSplitFooter(help, m.width))
 
 	return b.String()
 }
@@ -664,7 +689,7 @@ func (m *Model) renderVersionsView() string {
 
 	// Help
 	help := "[↑/↓] navigate  [d] diff  [esc] back  [r] backup  [v] verify  [q] quit"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderSplitFooter(help, m.width))
 
 	return b.String()
 }
@@ -752,7 +777,7 @@ func (m *Model) renderDiffSelectView() string {
 
 	// Help
 	help := "[↑/↓] navigate  [space] select  [esc] cancel"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderSplitFooter(help, m.width))
 
 	return b.String()
 }
@@ -837,7 +862,7 @@ func (m *Model) renderDiffResultView() string {
 
 	// Help
 	help := "[↑/↓] navigate  [enter] view diff  [esc] back  [q] quit"
-	b.WriteString(helpStyle.Render(help))
+	b.WriteString(renderSplitFooter(help, m.width))
 
 	return b.String()
 }
@@ -964,6 +989,48 @@ func (m *Model) renderFileDiffView() string {
 
 	// Help
 	help := "[↑/↓] scroll  [s] swap sides  [esc] back  [q] quit"
+	b.WriteString(renderSplitFooter(help, m.width))
+
+	return b.String()
+}
+
+func (m *Model) renderSettingsView() string {
+	var b strings.Builder
+
+	// Title
+	title := titleStyle.Render(" ⚙ Settings ")
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	// Settings options
+	settings := []struct {
+		name        string
+		description string
+		value       string
+	}{
+		{"Backup Directory", "Where backups are stored", m.config.BackupDir},
+		{"Color Theme", "UI color scheme", "purple (default)"},
+		{"Migrate Backups", "Move backups to new location", "→"},
+		{"About", "Version and info", "→"},
+	}
+
+	for i, s := range settings {
+		style := normalStyle
+		prefix := "  "
+		if i == m.settingsCursor {
+			style = selectedStyle
+			prefix = "▸ "
+		}
+
+		line := fmt.Sprintf("%s%-20s %s", prefix, s.name, dimStyle.Render(s.value))
+		b.WriteString(style.Render(line))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("    %s", s.description)))
+		b.WriteString("\n\n")
+	}
+
+	// Help
+	help := "[↑/↓] navigate  [enter] select  [esc] back"
 	b.WriteString(helpStyle.Render(help))
 
 	return b.String()

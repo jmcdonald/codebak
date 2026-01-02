@@ -1,6 +1,10 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 // Colors - only include those that are actually used
 var (
@@ -53,4 +57,32 @@ var (
 
 	deletedStyle = lipgloss.NewStyle().
 			Foreground(errorColor) // Red for deleted lines
+
+	// Settings style (for right-justified settings hint)
+	settingsHintStyle = lipgloss.NewStyle().
+				Foreground(mutedColor).
+				Bold(true)
 )
+
+// renderSplitFooter creates a footer with left help and right settings hint
+func renderSplitFooter(leftHelp string, width int) string {
+	rightHelp := "[?] settings"
+
+	// Calculate available width and padding
+	leftLen := len(leftHelp)
+	rightLen := len(rightHelp)
+	totalLen := leftLen + rightLen
+
+	// Default width if not set
+	if width < 60 {
+		width = 80
+	}
+
+	// Calculate padding between left and right
+	padding := width - totalLen - 4 // Account for app padding
+	if padding < 2 {
+		padding = 2
+	}
+
+	return helpStyle.Render(leftHelp) + strings.Repeat(" ", padding) + settingsHintStyle.Render(rightHelp)
+}
