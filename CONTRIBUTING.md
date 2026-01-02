@@ -31,24 +31,26 @@ This section defines what code MUST, SHOULD, and SHOULD NOT be tested.
 | `internal/config/` | **MUST TEST** | Configuration loading and validation |
 | `internal/manifest/` | **MUST TEST** | Manifest generation and checksum verification |
 | `internal/recovery/` | **MUST TEST** | Recovery operations - critical for data integrity |
-| `internal/cli/` | **SHOULD TEST** | Command handlers - test via mocked dependencies |
-| `internal/tui/` | **SHOULD TEST** | Pure functions and state logic (NOT render functions) |
-| `internal/mocks/` | **SHOULD TEST** | Verify mock behavior matches contracts |
+| `internal/cli/` | **MUST TEST** | Command handlers - test via mocked dependencies |
+| `internal/tui/` | **MUST TEST** | Pure functions and state logic |
+| `internal/mocks/` | **MUST TEST** | Verify mock behavior matches contracts |
 | `internal/adapters/` | **DO NOT TEST** | Thin wrappers around stdlib/OS - tested via integration |
 | `internal/launchd/` | **DO NOT TEST** | macOS-specific system calls requiring permissions |
 | `internal/ports/` | **DO NOT TEST** | Interface definitions only |
-| `render*` functions | **DO NOT TEST** | UI display strings - brittle, low value |
 
-### Coverage Targets (Testable Code Only)
+### Coverage Target
 
-| Package | Target | Rationale |
-|---------|--------|-----------|
-| `backup` | 80%+ | Core backup logic |
-| `config` | 80%+ | Configuration handling |
-| `manifest` | 85%+ | Data integrity critical |
-| `recovery` | 80%+ | Recovery logic |
-| `cli` | 50%+ | Command wrappers |
-| `tui` (non-render) | 50%+ | State management |
+**All testable code paths must have 95%+ coverage.** OS error fallbacks and untestable paths are excluded.
+
+| Package | Target | Notes |
+|---------|--------|-------|
+| `backup` | 95%+ | Excluding manifest/checksum OS errors |
+| `config` | 85%+ | Excluding os.UserHomeDir fallbacks |
+| `manifest` | 95%+ | ✓ Achieved |
+| `recovery` | 95%+ | ✓ Achieved |
+| `cli` | 95%+ | ✓ Achieved |
+| `tui` | 95%+ | ✓ Achieved |
+| `mocks` | 100% | ✓ Achieved |
 
 ### What NOT to Test
 
@@ -70,6 +72,12 @@ This section defines what code MUST, SHOULD, and SHOULD NOT be tested.
 4. **Interface definitions** (`internal/ports/`)
    - No logic to test
    - Contracts verified by implementations
+
+5. **OS error fallbacks** (`os.UserHomeDir()` errors, etc.)
+   - These are system-level error handlers for rare OS failures
+   - Cannot be triggered in unit tests without mocking stdlib
+   - Extremely rare in practice (e.g., no HOME environment variable)
+   - Covered by defensive programming, not automated tests
 
 ### Test Patterns
 

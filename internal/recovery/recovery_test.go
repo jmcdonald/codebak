@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/mcdonaldj/codebak/internal/adapters/ziparchiver"
 	"github.com/mcdonaldj/codebak/internal/config"
+	"github.com/mcdonaldj/codebak/internal/ports"
 )
 
 // isWithinDir checks if the target path is within the base directory.
@@ -535,6 +537,520 @@ func computeTestChecksum(t *testing.T, path string) string {
 
 	h := sha256.Sum256(data)
 	return fmt.Sprintf("%x", h)
+}
+
+// ============================================================================
+// Additional tests for coverage improvement
+// ============================================================================
+
+func TestVerifySpecificVersion(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Setup test backup
+	setupTestBackup(t, tempDir)
+
+	cfg := &config.Config{
+		SourceDir: filepath.Join(tempDir, "source"),
+		BackupDir: filepath.Join(tempDir, "backups"),
+	}
+
+	// Test with specific version (without .zip extension)
+	err = Verify(cfg, "test-project", "20260101-120000")
+	if err != nil {
+		t.Errorf("Verify with specific version failed: %v", err)
+	}
+}
+
+func TestVerifyVersionNotFound(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Setup test backup
+	setupTestBackup(t, tempDir)
+
+	cfg := &config.Config{
+		SourceDir: filepath.Join(tempDir, "source"),
+		BackupDir: filepath.Join(tempDir, "backups"),
+	}
+
+	// Test with non-existent version
+	err = Verify(cfg, "test-project", "19990101-000000")
+	if err == nil {
+		t.Error("Verify should fail for non-existent version")
+	}
+	if !strings.Contains(err.Error(), "backup not found") {
+		t.Errorf("Expected 'backup not found' error, got: %v", err)
+	}
+}
+
+func TestVerifyChecksumMismatch(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	backupDir := filepath.Join(tempDir, "backups")
+	projectBackupDir := filepath.Join(backupDir, "test-project")
+	if err := os.MkdirAll(projectBackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	// Create a zip
+	zipPath := filepath.Join(projectBackupDir, "20260101-120000.zip")
+	createValidZip(t, zipPath)
+
+	// Create manifest with WRONG checksum
+	manifestContent := `{
+		"project": "test-project",
+		"source": "/some/path",
+		"backups": [{
+			"file": "20260101-120000.zip",
+			"sha256": "wrong_checksum_that_will_never_match",
+			"size_bytes": 100,
+			"created_at": "2026-01-01T12:00:00Z",
+			"git_head": "abc123",
+			"file_count": 1,
+			"excluded": []
+		}]
+	}`
+
+	manifestPath := filepath.Join(projectBackupDir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+		t.Fatalf("Failed to write manifest: %v", err)
+	}
+
+	cfg := &config.Config{
+		BackupDir: backupDir,
+	}
+
+	err = Verify(cfg, "test-project", "")
+	if err == nil {
+		t.Error("Verify should fail for checksum mismatch")
+	}
+	if !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Errorf("Expected 'checksum mismatch' error, got: %v", err)
+	}
+}
+
+func TestRecoverSpecificVersion(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Setup test backup
+	setupTestBackup(t, tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	projectPath := filepath.Join(sourceDir, "test-project")
+
+	// Ensure project doesn't exist
+	os.RemoveAll(projectPath)
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: filepath.Join(tempDir, "backups"),
+	}
+
+	opts := RecoverOptions{
+		Project: "test-project",
+		Version: "20260101-120000", // Specific version
+	}
+
+	err = Recover(cfg, opts)
+	if err != nil {
+		t.Fatalf("Recover with specific version failed: %v", err)
+	}
+
+	// Check that restored file exists
+	restoredFile := filepath.Join(projectPath, "file.txt")
+	if _, err := os.Stat(restoredFile); os.IsNotExist(err) {
+		t.Error("Restored file not found")
+	}
+}
+
+func TestRecoverVersionNotFound(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Setup test backup
+	setupTestBackup(t, tempDir)
+
+	cfg := &config.Config{
+		SourceDir: filepath.Join(tempDir, "source"),
+		BackupDir: filepath.Join(tempDir, "backups"),
+	}
+
+	opts := RecoverOptions{
+		Project: "test-project",
+		Version: "19990101-000000", // Non-existent version
+	}
+
+	err = Recover(cfg, opts)
+	if err == nil {
+		t.Error("Recover should fail for non-existent version")
+	}
+	if !strings.Contains(err.Error(), "backup version not found") {
+		t.Errorf("Expected 'backup version not found' error, got: %v", err)
+	}
+}
+
+func TestRecoverNoBackupsForProject(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := &config.Config{
+		SourceDir: filepath.Join(tempDir, "source"),
+		BackupDir: tempDir,
+	}
+
+	opts := RecoverOptions{
+		Project: "nonexistent-project",
+	}
+
+	err = Recover(cfg, opts)
+	if err == nil {
+		t.Error("Recover should fail for project with no backups")
+	}
+	if !strings.Contains(err.Error(), "no backups found") {
+		t.Errorf("Expected 'no backups found' error, got: %v", err)
+	}
+}
+
+func TestServiceNewServiceAndNewDefaultService(t *testing.T) {
+	// Test NewDefaultService
+	svc := NewDefaultService()
+	if svc == nil {
+		t.Fatal("NewDefaultService returned nil")
+	}
+	if svc.fs == nil {
+		t.Error("NewDefaultService should set filesystem")
+	}
+	if svc.archiver == nil {
+		t.Error("NewDefaultService should set archiver")
+	}
+
+	// Test NewService with mocks
+	mockFS := &mockTestFS{}
+	mockArch := &mockTestArchiver{}
+	svc2 := NewService(mockFS, mockArch)
+	if svc2 == nil {
+		t.Fatal("NewService returned nil")
+	}
+	// Verify it was created (cannot compare interface to concrete type directly)
+	if svc2.fs == nil {
+		t.Error("NewService should use provided filesystem")
+	}
+	if svc2.archiver == nil {
+		t.Error("NewService should use provided archiver")
+	}
+}
+
+// mockTestFS is a minimal mock for testing
+type mockTestFS struct{}
+
+func (m *mockTestFS) ReadDir(name string) ([]os.DirEntry, error)                 { return nil, nil }
+func (m *mockTestFS) Stat(name string) (os.FileInfo, error)                      { return nil, nil }
+func (m *mockTestFS) MkdirAll(path string, perm os.FileMode) error               { return nil }
+func (m *mockTestFS) WriteFile(name string, data []byte, perm os.FileMode) error { return nil }
+func (m *mockTestFS) ReadFile(name string) ([]byte, error)                       { return nil, nil }
+func (m *mockTestFS) Remove(name string) error                                   { return nil }
+func (m *mockTestFS) RemoveAll(path string) error                                { return nil }
+func (m *mockTestFS) Rename(oldpath, newpath string) error                       { return nil }
+func (m *mockTestFS) Open(name string) (fs.File, error)                          { return nil, nil }
+func (m *mockTestFS) Create(name string) (*os.File, error)                       { return nil, nil }
+func (m *mockTestFS) Walk(root string, fn ports.WalkFunc) error                  { return nil }
+
+// mockTestArchiver is a minimal mock for testing
+type mockTestArchiver struct{}
+
+func (m *mockTestArchiver) Create(destPath, sourceDir string, exclude []string) (int, error) {
+	return 0, nil
+}
+func (m *mockTestArchiver) Extract(zipPath, destDir string) error { return nil }
+func (m *mockTestArchiver) List(zipPath string) (map[string]ports.FileInfo, error) {
+	return nil, nil
+}
+func (m *mockTestArchiver) ReadFile(zipPath, filePath, projectName string) (string, error) {
+	return "", nil
+}
+
+func TestListVersionsWithLoadError(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create a project dir with a malformed manifest
+	projectBackupDir := filepath.Join(tempDir, "bad-project")
+	if err := os.MkdirAll(projectBackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	// Write malformed manifest
+	manifestPath := filepath.Join(projectBackupDir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte("not valid json {{{"), 0644); err != nil {
+		t.Fatalf("Failed to write manifest: %v", err)
+	}
+
+	cfg := &config.Config{
+		BackupDir: tempDir,
+	}
+
+	_, err = ListVersions(cfg, "bad-project")
+	if err == nil {
+		t.Error("ListVersions should fail for malformed manifest")
+	}
+}
+
+func TestVerifyComputeChecksumError(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	backupDir := filepath.Join(tempDir, "backups")
+	projectBackupDir := filepath.Join(backupDir, "test-project")
+	if err := os.MkdirAll(projectBackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	// Create manifest pointing to a non-existent zip file
+	manifestContent := `{
+		"project": "test-project",
+		"source": "/some/path",
+		"backups": [{
+			"file": "missing.zip",
+			"sha256": "abc123",
+			"size_bytes": 100,
+			"created_at": "2026-01-01T12:00:00Z",
+			"git_head": "abc123",
+			"file_count": 1,
+			"excluded": []
+		}]
+	}`
+
+	manifestPath := filepath.Join(projectBackupDir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+		t.Fatalf("Failed to write manifest: %v", err)
+	}
+
+	cfg := &config.Config{
+		BackupDir: backupDir,
+	}
+
+	err = Verify(cfg, "test-project", "")
+	if err == nil {
+		t.Error("Verify should fail when zip file doesn't exist")
+	}
+	if !strings.Contains(err.Error(), "computing checksum") {
+		t.Errorf("Expected 'computing checksum' error, got: %v", err)
+	}
+}
+
+func TestVerifyManifestLoadError(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	backupDir := filepath.Join(tempDir, "backups")
+	projectBackupDir := filepath.Join(backupDir, "bad-project")
+	if err := os.MkdirAll(projectBackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	// Write malformed manifest
+	manifestPath := filepath.Join(projectBackupDir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte("invalid json"), 0644); err != nil {
+		t.Fatalf("Failed to write manifest: %v", err)
+	}
+
+	cfg := &config.Config{
+		BackupDir: backupDir,
+	}
+
+	err = Verify(cfg, "bad-project", "")
+	if err == nil {
+		t.Error("Verify should fail for malformed manifest")
+	}
+	if !strings.Contains(err.Error(), "loading manifest") {
+		t.Errorf("Expected 'loading manifest' error, got: %v", err)
+	}
+}
+
+func TestRecoverManifestLoadError(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	backupDir := filepath.Join(tempDir, "backups")
+	projectBackupDir := filepath.Join(backupDir, "bad-project")
+	if err := os.MkdirAll(projectBackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	// Write malformed manifest
+	manifestPath := filepath.Join(projectBackupDir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte("invalid json"), 0644); err != nil {
+		t.Fatalf("Failed to write manifest: %v", err)
+	}
+
+	cfg := &config.Config{
+		SourceDir: filepath.Join(tempDir, "source"),
+		BackupDir: backupDir,
+	}
+
+	opts := RecoverOptions{
+		Project: "bad-project",
+	}
+
+	err = Recover(cfg, opts)
+	if err == nil {
+		t.Error("Recover should fail for malformed manifest")
+	}
+	if !strings.Contains(err.Error(), "loading manifest") {
+		t.Errorf("Expected 'loading manifest' error, got: %v", err)
+	}
+}
+
+func TestRecoverVerificationFails(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	backupDir := filepath.Join(tempDir, "backups")
+	projectBackupDir := filepath.Join(backupDir, "test-project")
+	if err := os.MkdirAll(projectBackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	// Create a valid zip
+	zipPath := filepath.Join(projectBackupDir, "20260101-120000.zip")
+	createValidZip(t, zipPath)
+
+	// Create manifest with WRONG checksum so verification fails
+	manifestContent := `{
+		"project": "test-project",
+		"source": "/some/path",
+		"backups": [{
+			"file": "20260101-120000.zip",
+			"sha256": "wrong_checksum",
+			"size_bytes": 100,
+			"created_at": "2026-01-01T12:00:00Z",
+			"git_head": "abc123",
+			"file_count": 1,
+			"excluded": []
+		}]
+	}`
+
+	manifestPath := filepath.Join(projectBackupDir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+		t.Fatalf("Failed to write manifest: %v", err)
+	}
+
+	sourceDir := filepath.Join(tempDir, "source")
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: backupDir,
+	}
+
+	opts := RecoverOptions{
+		Project: "test-project",
+	}
+
+	err = Recover(cfg, opts)
+	if err == nil {
+		t.Error("Recover should fail when verification fails")
+	}
+	if !strings.Contains(err.Error(), "verification failed") {
+		t.Errorf("Expected 'verification failed' error, got: %v", err)
+	}
+}
+
+func TestRecoverExtractError(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	backupDir := filepath.Join(tempDir, "backups")
+	projectBackupDir := filepath.Join(backupDir, "test-project")
+	if err := os.MkdirAll(projectBackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+
+	// Create a corrupt/empty "zip" file
+	zipPath := filepath.Join(projectBackupDir, "20260101-120000.zip")
+	if err := os.WriteFile(zipPath, []byte("not a valid zip"), 0644); err != nil {
+		t.Fatalf("Failed to create corrupt zip: %v", err)
+	}
+
+	// Compute checksum of the corrupt file (so verification passes)
+	checksum := computeTestChecksum(t, zipPath)
+
+	// Create manifest
+	manifestContent := fmt.Sprintf(`{
+		"project": "test-project",
+		"source": "/some/path",
+		"backups": [{
+			"file": "20260101-120000.zip",
+			"sha256": "%s",
+			"size_bytes": 100,
+			"created_at": "2026-01-01T12:00:00Z",
+			"git_head": "abc123",
+			"file_count": 1,
+			"excluded": []
+		}]
+	}`, checksum)
+
+	manifestPath := filepath.Join(projectBackupDir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+		t.Fatalf("Failed to write manifest: %v", err)
+	}
+
+	sourceDir := filepath.Join(tempDir, "source")
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: backupDir,
+	}
+
+	opts := RecoverOptions{
+		Project: "test-project",
+	}
+
+	err = Recover(cfg, opts)
+	if err == nil {
+		t.Error("Recover should fail when extracting corrupt zip")
+	}
+	if !strings.Contains(err.Error(), "extracting backup") {
+		t.Errorf("Expected 'extracting backup' error, got: %v", err)
+	}
 }
 
 func TestExtractFile(t *testing.T) {

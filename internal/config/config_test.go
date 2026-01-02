@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -246,5 +247,250 @@ func TestConfigPath(t *testing.T) {
 		if filepath.Base(filepath.Dir(path)) != ".codebak" {
 			t.Errorf("ConfigPath should be in .codebak directory, got %s", path)
 		}
+	}
+}
+
+// ============================================================================
+// Additional tests for coverage improvement
+// ============================================================================
+
+func TestLoadReadFileError(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	// Create config directory
+	configDir := filepath.Join(tempDir, ".codebak")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("Failed to create config dir: %v", err)
+	}
+
+	// Create config file that's a directory (to cause read error)
+	configPath := filepath.Join(configDir, "config.yaml")
+	if err := os.MkdirAll(configPath, 0755); err != nil {
+		t.Fatalf("Failed to create config dir: %v", err)
+	}
+
+	// Load should fail
+	_, err = Load()
+	if err == nil {
+		t.Error("Load should fail when config file is a directory")
+	}
+}
+
+func TestSaveWriteFileSuccess(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	// Create a minimal config and save it
+	cfg := &Config{
+		SourceDir: "/source",
+		BackupDir: "/backup",
+		Schedule:  "daily",
+	}
+
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Verify file was created and is readable
+	configPath := filepath.Join(tempDir, ".codebak", "config.yaml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("Failed to read saved config: %v", err)
+	}
+
+	if len(data) == 0 {
+		t.Error("Config file is empty")
+	}
+}
+
+func TestExpandPathWithNoTilde(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"/absolute/path", "/absolute/path"},
+		{"relative/path", "relative/path"},
+		{"", ""},
+		{"./current", "./current"},
+		{"../parent", "../parent"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := ExpandPath(tt.input)
+			if result != tt.expected {
+				t.Errorf("ExpandPath(%q) = %q, expected %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestDefaultConfigContainsAllFields(t *testing.T) {
+	cfg := DefaultConfig()
+
+	// Verify all expected fields are populated
+	if cfg.SourceDir == "" {
+		t.Error("DefaultConfig should set SourceDir")
+	}
+	if cfg.BackupDir == "" {
+		t.Error("DefaultConfig should set BackupDir")
+	}
+	if cfg.Schedule == "" {
+		t.Error("DefaultConfig should set Schedule")
+	}
+	if cfg.Time == "" {
+		t.Error("DefaultConfig should set Time")
+	}
+	if len(cfg.Exclude) == 0 {
+		t.Error("DefaultConfig should set Exclude patterns")
+	}
+	if cfg.Retention.KeepLast == 0 {
+		t.Error("DefaultConfig should set Retention.KeepLast")
+	}
+
+	// Verify paths contain "code" and "backups"
+	if !filepath.IsAbs(cfg.SourceDir) {
+		t.Error("SourceDir should be absolute")
+	}
+	if !filepath.IsAbs(cfg.BackupDir) {
+		t.Error("BackupDir should be absolute")
+	}
+}
+
+func TestLoadPartialConfig(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	// Create config directory
+	configDir := filepath.Join(tempDir, ".codebak")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("Failed to create config dir: %v", err)
+	}
+
+	// Write a partial config (only some fields)
+	configPath := filepath.Join(configDir, "config.yaml")
+	configContent := `schedule: hourly`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	// Load and verify partial override works
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	// Schedule should be overridden
+	if cfg.Schedule != "hourly" {
+		t.Errorf("Schedule = %q, expected %q", cfg.Schedule, "hourly")
+	}
+
+	// Other fields should have defaults
+	if cfg.Time != "03:00" {
+		t.Errorf("Time = %q, expected default %q", cfg.Time, "03:00")
+	}
+}
+
+func TestSaveMkdirAllError(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	// Create a file where the config directory should be
+	// This will cause MkdirAll to fail
+	codebakPath := filepath.Join(tempDir, ".codebak")
+	if err := os.WriteFile(codebakPath, []byte("not a directory"), 0644); err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+
+	cfg := &Config{
+		SourceDir: "/source",
+		BackupDir: "/backup",
+	}
+
+	err = cfg.Save()
+	if err == nil {
+		t.Error("Save should fail when MkdirAll fails")
+	}
+}
+
+func TestConfigPathDefault(t *testing.T) {
+	// Test with valid HOME
+	path := ConfigPath()
+	if path == "" {
+		t.Error("ConfigPath returned empty string")
+	}
+	if !strings.Contains(path, ".codebak") {
+		t.Errorf("ConfigPath should contain .codebak, got %s", path)
+	}
+	if !strings.HasSuffix(path, "config.yaml") {
+		t.Errorf("ConfigPath should end with config.yaml, got %s", path)
+	}
+}
+
+func TestDefaultConfigHomeDir(t *testing.T) {
+	// Test with valid HOME - paths should be absolute
+	cfg := DefaultConfig()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("Cannot get home dir, skipping test")
+	}
+
+	if !strings.HasPrefix(cfg.SourceDir, home) {
+		t.Errorf("SourceDir should start with home dir, got %s", cfg.SourceDir)
+	}
+	if !strings.HasPrefix(cfg.BackupDir, home) {
+		t.Errorf("BackupDir should start with home dir, got %s", cfg.BackupDir)
+	}
+}
+
+func TestExpandPathTildeOnly(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("Cannot get home dir, skipping test")
+	}
+
+	// Test with just tilde
+	result := ExpandPath("~")
+	// filepath.Join(home, "") returns home without trailing slash
+	expected := filepath.Join(home, "")
+	if result != expected {
+		t.Errorf("ExpandPath(~) = %q, expected %q", result, expected)
+	}
+
+	// Test with tilde and path
+	result = ExpandPath("~/Documents")
+	expected = filepath.Join(home, "Documents")
+	if result != expected {
+		t.Errorf("ExpandPath(~/Documents) = %q, expected %q", result, expected)
 	}
 }
