@@ -1,0 +1,29 @@
+# Codecov configuration for codebak
+# https://docs.codecov.com/docs/codecov-yaml
+
+coverage:
+  precision: 2
+  round: down
+  range: "90...100"
+
+  status:
+    project:
+      default:
+        target: 100%
+        threshold: 0%
+    patch:
+      default:
+        target: 100%
+
+# Exclude thin adapter wrappers and entry points from coverage
+ignore:
+  - "cmd/**/*"
+  - "internal/adapters/**/*"
+  - "internal/launchd/**/*"
+  - "internal/ports/**/*"
+  - "**/*_test.go"
+
+comment:
+  layout: "reach,diff,flags,files"
+  behavior: default
+  require_changes: true
