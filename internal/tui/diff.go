@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"fmt"
 	"io"
+	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -133,8 +134,13 @@ func listZipFiles(zipPath string) (map[string]fileInfo, error) {
 			continue
 		}
 		path := parts[1]
+		// Safe conversion: check for overflow before uint64 -> int64
+		size := int64(0)
+		if f.UncompressedSize64 <= math.MaxInt64 {
+			size = int64(f.UncompressedSize64)
+		}
 		files[path] = fileInfo{
-			size:  int64(f.UncompressedSize64),
+			size:  size,
 			crc32: f.CRC32,
 		}
 	}
