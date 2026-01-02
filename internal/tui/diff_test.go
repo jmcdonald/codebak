@@ -324,3 +324,445 @@ func createTestZip(t *testing.T, path string, files map[string]string) {
 	}
 	w.Close()
 }
+
+// ============================================
+// ComputeFileDiff tests
+// ============================================
+
+func TestComputeFileDiffModified(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-filediff-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(backupDir, "testproj")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	// Create two versions with modified file
+	createTestZip(t, filepath.Join(projectDir, "v1.zip"), map[string]string{
+		"testproj/main.go": "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n",
+	})
+	createTestZip(t, filepath.Join(projectDir, "v2.zip"), map[string]string{
+		"testproj/main.go": "package main\n\nfunc main() {\n\tprintln(\"hello world\")\n}\n",
+	})
+
+	cfg := &config.Config{BackupDir: backupDir}
+
+	result, err := ComputeFileDiff(cfg, "testproj", "v1", "v2", "main.go", 'M')
+	if err != nil {
+		t.Fatalf("ComputeFileDiff failed: %v", err)
+	}
+
+	if result.Path != "main.go" {
+		t.Errorf("Path = %q, expected 'main.go'", result.Path)
+	}
+	if result.IsBinary {
+		t.Error("IsBinary should be false")
+	}
+	if result.Error != "" {
+		t.Errorf("Error = %q, expected empty", result.Error)
+	}
+	if len(result.Lines) == 0 {
+		t.Error("Lines should not be empty")
+	}
+}
+
+func TestComputeFileDiffAdded(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-filediff-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(backupDir, "testproj")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	createTestZip(t, filepath.Join(projectDir, "v1.zip"), map[string]string{
+		"testproj/existing.txt": "existing content",
+	})
+	createTestZip(t, filepath.Join(projectDir, "v2.zip"), map[string]string{
+		"testproj/existing.txt": "existing content",
+		"testproj/newfile.txt":  "new file content",
+	})
+
+	cfg := &config.Config{BackupDir: backupDir}
+
+	result, err := ComputeFileDiff(cfg, "testproj", "v1", "v2", "newfile.txt", 'A')
+	if err != nil {
+		t.Fatalf("ComputeFileDiff failed: %v", err)
+	}
+
+	if result.Error != "" {
+		t.Errorf("Error = %q, expected empty", result.Error)
+	}
+	// Added files should show all lines as additions
+	hasAdditions := false
+	for _, line := range result.Lines {
+		if line.Type == '+' {
+			hasAdditions = true
+			break
+		}
+	}
+	if !hasAdditions {
+		t.Error("Added file should have addition lines")
+	}
+}
+
+func TestComputeFileDiffDeleted(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-filediff-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(backupDir, "testproj")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	createTestZip(t, filepath.Join(projectDir, "v1.zip"), map[string]string{
+		"testproj/deleted.txt": "deleted content",
+	})
+	createTestZip(t, filepath.Join(projectDir, "v2.zip"), map[string]string{
+		"testproj/other.txt": "other content",
+	})
+
+	cfg := &config.Config{BackupDir: backupDir}
+
+	result, err := ComputeFileDiff(cfg, "testproj", "v1", "v2", "deleted.txt", 'D')
+	if err != nil {
+		t.Fatalf("ComputeFileDiff failed: %v", err)
+	}
+
+	if result.Error != "" {
+		t.Errorf("Error = %q, expected empty", result.Error)
+	}
+	// Deleted files should show all lines as deletions
+	hasDeletions := false
+	for _, line := range result.Lines {
+		if line.Type == '-' {
+			hasDeletions = true
+			break
+		}
+	}
+	if !hasDeletions {
+		t.Error("Deleted file should have deletion lines")
+	}
+}
+
+func TestComputeFileDiffBinaryFile(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-filediff-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(backupDir, "testproj")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	// Create files with binary content (null bytes)
+	createTestZip(t, filepath.Join(projectDir, "v1.zip"), map[string]string{
+		"testproj/binary.bin": "binary\x00content\x00here",
+	})
+	createTestZip(t, filepath.Join(projectDir, "v2.zip"), map[string]string{
+		"testproj/binary.bin": "modified\x00binary\x00content",
+	})
+
+	cfg := &config.Config{BackupDir: backupDir}
+
+	result, err := ComputeFileDiff(cfg, "testproj", "v1", "v2", "binary.bin", 'M')
+	if err != nil {
+		t.Fatalf("ComputeFileDiff failed: %v", err)
+	}
+
+	if !result.IsBinary {
+		t.Error("IsBinary should be true for binary files")
+	}
+}
+
+func TestComputeFileDiffReadError(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-filediff-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(backupDir, "testproj")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	createTestZip(t, filepath.Join(projectDir, "v1.zip"), map[string]string{
+		"testproj/file.txt": "content",
+	})
+	createTestZip(t, filepath.Join(projectDir, "v2.zip"), map[string]string{
+		"testproj/file.txt": "content",
+	})
+
+	cfg := &config.Config{BackupDir: backupDir}
+
+	// Try to read a file that doesn't exist in the zip
+	result, err := ComputeFileDiff(cfg, "testproj", "v1", "v2", "nonexistent.txt", 'M')
+	if err != nil {
+		t.Fatalf("ComputeFileDiff should not return error, it sets result.Error: %v", err)
+	}
+
+	if result.Error == "" {
+		t.Error("Error should be set for missing file")
+	}
+}
+
+func TestComputeFileDiffReadErrorV2(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-filediff-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(backupDir, "testproj")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	createTestZip(t, filepath.Join(projectDir, "v1.zip"), map[string]string{
+		"testproj/file.txt": "content v1",
+	})
+	createTestZip(t, filepath.Join(projectDir, "v2.zip"), map[string]string{
+		"testproj/other.txt": "other content",
+	})
+
+	cfg := &config.Config{BackupDir: backupDir}
+
+	// Try to read a modified file where v2 doesn't have it
+	result, err := ComputeFileDiff(cfg, "testproj", "v1", "v2", "file.txt", 'M')
+	if err != nil {
+		t.Fatalf("ComputeFileDiff should not return error: %v", err)
+	}
+
+	if result.Error == "" {
+		t.Error("Error should be set when v2 is missing the file")
+	}
+}
+
+func TestComputeFileDiffAddedReadError(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-filediff-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(backupDir, "testproj")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	createTestZip(t, filepath.Join(projectDir, "v1.zip"), map[string]string{
+		"testproj/other.txt": "content",
+	})
+	createTestZip(t, filepath.Join(projectDir, "v2.zip"), map[string]string{
+		"testproj/other.txt": "content",
+	})
+
+	cfg := &config.Config{BackupDir: backupDir}
+
+	// Try to read an added file that doesn't exist
+	result, err := ComputeFileDiff(cfg, "testproj", "v1", "v2", "missing.txt", 'A')
+	if err != nil {
+		t.Fatalf("ComputeFileDiff should not return error: %v", err)
+	}
+
+	if result.Error == "" {
+		t.Error("Error should be set for missing added file")
+	}
+}
+
+func TestComputeFileDiffDeletedReadError(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-filediff-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(backupDir, "testproj")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	createTestZip(t, filepath.Join(projectDir, "v1.zip"), map[string]string{
+		"testproj/other.txt": "content",
+	})
+	createTestZip(t, filepath.Join(projectDir, "v2.zip"), map[string]string{
+		"testproj/other.txt": "content",
+	})
+
+	cfg := &config.Config{BackupDir: backupDir}
+
+	// Try to read a deleted file that doesn't exist in v1
+	result, err := ComputeFileDiff(cfg, "testproj", "v1", "v2", "missing.txt", 'D')
+	if err != nil {
+		t.Fatalf("ComputeFileDiff should not return error: %v", err)
+	}
+
+	if result.Error == "" {
+		t.Error("Error should be set for missing deleted file")
+	}
+}
+
+func TestListZipFilesError(t *testing.T) {
+	_, err := listZipFiles("/nonexistent/path/to.zip")
+	if err == nil {
+		t.Error("listZipFiles should return error for missing file")
+	}
+}
+
+func TestComputeDiffZipError(t *testing.T) {
+	cfg := &config.Config{BackupDir: "/nonexistent"}
+
+	_, err := ComputeDiff(cfg, "project", "v1.zip", "v2.zip")
+	if err == nil {
+		t.Error("ComputeDiff should return error for missing zip files")
+	}
+}
+
+func TestListZipFilesWithDirectories(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-zipdir-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	zipPath := filepath.Join(tempDir, "test.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatalf("Failed to create zip: %v", err)
+	}
+
+	w := zip.NewWriter(f)
+	// Create a directory entry (ends with /)
+	_, err = w.Create("project/subdir/")
+	if err != nil {
+		t.Fatalf("Failed to create dir entry: %v", err)
+	}
+	// Create a file
+	fw, err := w.Create("project/file.txt")
+	if err != nil {
+		t.Fatalf("Failed to create file entry: %v", err)
+	}
+	fw.Write([]byte("content"))
+	w.Close()
+	f.Close()
+
+	files, err := listZipFiles(zipPath)
+	if err != nil {
+		t.Fatalf("listZipFiles failed: %v", err)
+	}
+
+	// Should only contain files, not directories
+	if len(files) != 1 {
+		t.Errorf("len(files) = %d, expected 1", len(files))
+	}
+}
+
+func TestListZipFilesShortPath(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-zipshort-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	zipPath := filepath.Join(tempDir, "test.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatalf("Failed to create zip: %v", err)
+	}
+
+	w := zip.NewWriter(f)
+	// Create a file with no directory prefix
+	fw, err := w.Create("toplevel.txt")
+	if err != nil {
+		t.Fatalf("Failed to create file entry: %v", err)
+	}
+	fw.Write([]byte("content"))
+	w.Close()
+	f.Close()
+
+	files, err := listZipFiles(zipPath)
+	if err != nil {
+		t.Fatalf("listZipFiles failed: %v", err)
+	}
+
+	// Should not include files without project prefix
+	if len(files) != 0 {
+		t.Errorf("len(files) = %d, expected 0 (files without project prefix should be skipped)", len(files))
+	}
+}
+
+func TestIsBinaryContentLongContent(t *testing.T) {
+	// Test with content longer than 8000 bytes
+	longText := make([]byte, 10000)
+	for i := range longText {
+		longText[i] = 'a'
+	}
+
+	if IsBinaryContent(string(longText)) {
+		t.Error("Long text content should not be detected as binary")
+	}
+
+	// Add null byte after 8000 chars - should not be detected
+	longTextWithNull := make([]byte, 10000)
+	copy(longTextWithNull, longText)
+	longTextWithNull[9000] = 0
+
+	if IsBinaryContent(string(longTextWithNull)) {
+		t.Error("Null byte after 8000 chars should not be detected as binary")
+	}
+}
+
+func TestConvertToLineDiffComplexCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		content1 string
+		content2 string
+	}{
+		{
+			name:     "lines reordered",
+			content1: "line1\nline2\nline3",
+			content2: "line3\nline2\nline1",
+		},
+		{
+			name:     "lines duplicated",
+			content1: "line1\nline2",
+			content2: "line1\nline1\nline2",
+		},
+		{
+			name:     "multiple additions and deletions",
+			content1: "a\nb\nc\nd\ne",
+			content2: "a\nx\nc\ny\ne",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Just ensure it doesn't panic
+			result := convertToLineDiff(tt.content1, tt.content2, nil)
+			if result == nil {
+				t.Error("result should not be nil")
+			}
+		})
+	}
+}

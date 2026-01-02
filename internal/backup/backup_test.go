@@ -10,6 +10,7 @@ import (
 	"github.com/mcdonaldj/codebak/internal/adapters/ziparchiver"
 	"github.com/mcdonaldj/codebak/internal/config"
 	"github.com/mcdonaldj/codebak/internal/manifest"
+	"github.com/mcdonaldj/codebak/internal/mocks"
 )
 
 func TestCreateZipRoundTrip(t *testing.T) {
@@ -508,5 +509,386 @@ func TestRunBackup(t *testing.T) {
 		if r.Error != nil {
 			t.Errorf("Backup of %s failed: %v", r.Project, r.Error)
 		}
+	}
+}
+
+// ============================================================================
+// Additional tests for coverage improvement
+// ============================================================================
+
+func TestHasChangesGitHeadChanged(t *testing.T) {
+	// Test git HEAD changed path using mocks
+	mockFS := mocks.NewMockFileSystem()
+	mockGit := mocks.NewMockGitClient()
+	mockArchiver := mocks.NewMockArchiver()
+
+	// Setup: Project is a git repo with different HEAD than last backup
+	projectPath := "/test/project"
+	mockGit.Repos[projectPath] = true
+	mockGit.Heads[projectPath] = "newhead1234567890"
+
+	svc := NewService(mockFS, mockGit, mockArchiver)
+
+	lastBackup := &manifest.BackupEntry{
+		GitHead:   "oldhead0987654321",
+		CreatedAt: time.Now().Add(-24 * time.Hour),
+	}
+
+	hasChanges, reason := svc.HasChanges(projectPath, lastBackup)
+	if !hasChanges {
+		t.Error("HasChanges should return true when git HEAD changed")
+	}
+	if reason == "" {
+		t.Error("reason should not be empty")
+	}
+}
+
+func TestHasChangesGitHeadUnchanged(t *testing.T) {
+	// Test git HEAD unchanged path
+	mockFS := mocks.NewMockFileSystem()
+	mockGit := mocks.NewMockGitClient()
+	mockArchiver := mocks.NewMockArchiver()
+
+	projectPath := "/test/project"
+	headCommit := "samehead1234567890"
+	mockGit.Repos[projectPath] = true
+	mockGit.Heads[projectPath] = headCommit
+
+	svc := NewService(mockFS, mockGit, mockArchiver)
+
+	lastBackup := &manifest.BackupEntry{
+		GitHead:   headCommit, // Same as current
+		CreatedAt: time.Now().Add(-24 * time.Hour),
+	}
+
+	hasChanges, reason := svc.HasChanges(projectPath, lastBackup)
+	if hasChanges {
+		t.Error("HasChanges should return false when git HEAD unchanged")
+	}
+	if reason != "git HEAD unchanged" {
+		t.Errorf("reason = %q, expected %q", reason, "git HEAD unchanged")
+	}
+}
+
+func TestHasChangesNonGitRepoWithNewerFiles(t *testing.T) {
+	// Test non-git repo with newer files (mtime fallback)
+	mockFS := mocks.NewMockFileSystem()
+	mockGit := mocks.NewMockGitClient()
+	mockArchiver := mocks.NewMockArchiver()
+
+	projectPath := "/test/project"
+	// Not a git repo
+	mockGit.Repos[projectPath] = false
+
+	// Setup walk to return a newer file
+	mockFS.WalkEntries = []mocks.WalkEntry{
+		{
+			Path: projectPath + "/file.txt",
+			Info: &mockFileInfo{modTime: time.Now()}, // File modified now
+		},
+	}
+
+	svc := NewService(mockFS, mockGit, mockArchiver)
+
+	lastBackup := &manifest.BackupEntry{
+		CreatedAt: time.Now().Add(-24 * time.Hour), // Backup was yesterday
+	}
+
+	hasChanges, reason := svc.HasChanges(projectPath, lastBackup)
+	if !hasChanges {
+		t.Error("HasChanges should return true when files modified after last backup")
+	}
+	if reason != "files modified since last backup" {
+		t.Errorf("reason = %q, expected %q", reason, "files modified since last backup")
+	}
+}
+
+func TestHasChangesNonGitRepoNoChanges(t *testing.T) {
+	// Test non-git repo with no newer files
+	mockFS := mocks.NewMockFileSystem()
+	mockGit := mocks.NewMockGitClient()
+	mockArchiver := mocks.NewMockArchiver()
+
+	projectPath := "/test/project"
+	mockGit.Repos[projectPath] = false
+
+	// Setup walk to return an older file
+	mockFS.WalkEntries = []mocks.WalkEntry{
+		{
+			Path: projectPath + "/file.txt",
+			Info: &mockFileInfo{modTime: time.Now().Add(-48 * time.Hour)}, // File 2 days old
+		},
+	}
+
+	svc := NewService(mockFS, mockGit, mockArchiver)
+
+	lastBackup := &manifest.BackupEntry{
+		CreatedAt: time.Now().Add(-24 * time.Hour), // Backup was yesterday
+	}
+
+	hasChanges, reason := svc.HasChanges(projectPath, lastBackup)
+	if hasChanges {
+		t.Error("HasChanges should return false when no files modified after last backup")
+	}
+	if reason != "no changes detected" {
+		t.Errorf("reason = %q, expected %q", reason, "no changes detected")
+	}
+}
+
+func TestBackupProjectMkdirAllError(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	mockFS := mocks.NewMockFileSystem()
+	mockGit := mocks.NewMockGitClient()
+	mockArchiver := mocks.NewMockArchiver()
+
+	sourceDir := filepath.Join(tempDir, "source")
+	projectDir := filepath.Join(sourceDir, "test-project")
+	backupDir := filepath.Join(tempDir, "backups")
+	projectBackupDir := filepath.Join(backupDir, "test-project")
+
+	// Create actual project dir (so Stat succeeds via real FS)
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Mock Stat to succeed, but MkdirAll to fail
+	mockFS.Stats[projectDir] = &mockFileInfo{name: "test-project", isDir: true}
+	mockFS.Errors[projectBackupDir] = os.ErrPermission
+
+	svc := NewService(mockFS, mockGit, mockArchiver)
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: backupDir,
+	}
+
+	result := svc.BackupProject(cfg, "test-project")
+	if result.Error == nil {
+		t.Error("BackupProject should fail when MkdirAll fails")
+	}
+}
+
+func TestBackupProjectArchiverCreateError(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	mockFS := mocks.NewMockFileSystem()
+	mockGit := mocks.NewMockGitClient()
+	mockArchiver := mocks.NewMockArchiver()
+
+	sourceDir := filepath.Join(tempDir, "source")
+	projectDir := filepath.Join(sourceDir, "test-project")
+	backupDir := filepath.Join(tempDir, "backups")
+
+	// Create actual project dir
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Mock Stat to succeed
+	mockFS.Stats[projectDir] = &mockFileInfo{name: "test-project", isDir: true}
+
+	// Mock archiver to fail
+	mockArchiver.Errors["Create"] = os.ErrPermission
+
+	svc := NewService(mockFS, mockGit, mockArchiver)
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: backupDir,
+	}
+
+	result := svc.BackupProject(cfg, "test-project")
+	if result.Error == nil {
+		t.Error("BackupProject should fail when archiver.Create fails")
+	}
+}
+
+func TestRunBackupListProjectsError(t *testing.T) {
+	mockFS := mocks.NewMockFileSystem()
+	mockGit := mocks.NewMockGitClient()
+	mockArchiver := mocks.NewMockArchiver()
+
+	// Mock ReadDir to fail
+	sourceDir := "/test/source"
+	mockFS.Errors[sourceDir] = os.ErrPermission
+
+	svc := NewService(mockFS, mockGit, mockArchiver)
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: "/test/backups",
+	}
+
+	_, err := svc.RunBackup(cfg)
+	if err == nil {
+		t.Error("RunBackup should fail when ListProjects fails")
+	}
+}
+
+func TestNewServiceAndNewDefaultService(t *testing.T) {
+	// Test NewDefaultService
+	svc := NewDefaultService()
+	if svc == nil {
+		t.Fatal("NewDefaultService returned nil")
+	}
+	if svc.fs == nil {
+		t.Error("NewDefaultService should set filesystem")
+	}
+	if svc.git == nil {
+		t.Error("NewDefaultService should set git client")
+	}
+	if svc.archiver == nil {
+		t.Error("NewDefaultService should set archiver")
+	}
+
+	// Test NewService with mocks
+	mockFS := mocks.NewMockFileSystem()
+	mockGit := mocks.NewMockGitClient()
+	mockArchiver := mocks.NewMockArchiver()
+	svc2 := NewService(mockFS, mockGit, mockArchiver)
+	if svc2 == nil {
+		t.Fatal("NewService returned nil")
+	}
+}
+
+// mockFileInfo implements os.FileInfo for testing
+type mockFileInfo struct {
+	name    string
+	size    int64
+	mode    os.FileMode
+	modTime time.Time
+	isDir   bool
+}
+
+func (fi *mockFileInfo) Name() string       { return fi.name }
+func (fi *mockFileInfo) Size() int64        { return fi.size }
+func (fi *mockFileInfo) Mode() os.FileMode  { return fi.mode }
+func (fi *mockFileInfo) ModTime() time.Time { return fi.modTime }
+func (fi *mockFileInfo) IsDir() bool        { return fi.isDir }
+func (fi *mockFileInfo) Sys() interface{}   { return nil }
+
+func TestBackupProjectManifestLoadError(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(sourceDir, "test-project")
+	projectBackupDir := filepath.Join(backupDir, "test-project")
+
+	// Create project with files
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Create malformed manifest
+	if err := os.MkdirAll(projectBackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create backup dir: %v", err)
+	}
+	manifestPath := filepath.Join(projectBackupDir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte("invalid json {{{"), 0644); err != nil {
+		t.Fatalf("Failed to create manifest: %v", err)
+	}
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: backupDir,
+	}
+
+	result := BackupProject(cfg, "test-project")
+	if result.Error == nil {
+		t.Error("BackupProject should fail when manifest Load fails")
+	}
+}
+
+func TestHasChangesWalkError(t *testing.T) {
+	// Test walk error handling in HasChanges
+	mockFS := mocks.NewMockFileSystem()
+	mockGit := mocks.NewMockGitClient()
+	mockArchiver := mocks.NewMockArchiver()
+
+	projectPath := "/test/project"
+	// Not a git repo so it falls back to mtime check
+	mockGit.Repos[projectPath] = false
+
+	// Setup walk with an error
+	mockFS.WalkEntries = []mocks.WalkEntry{
+		{
+			Path: projectPath + "/file.txt",
+			Info: nil,
+			Err:  os.ErrPermission, // Walk encounters an error
+		},
+	}
+
+	svc := NewService(mockFS, mockGit, mockArchiver)
+
+	lastBackup := &manifest.BackupEntry{
+		CreatedAt: time.Now().Add(-24 * time.Hour),
+	}
+
+	// Should handle error gracefully and continue (return false/no changes)
+	hasChanges, _ := svc.HasChanges(projectPath, lastBackup)
+	// Error handling in walk continues, so it should return no changes
+	if hasChanges {
+		t.Error("HasChanges should return false when walk encounters error and finds no newer files")
+	}
+}
+
+func TestBackupProjectWithRetention(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(sourceDir, "test-project")
+
+	// Create project with files
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: backupDir,
+		Exclude:   []string{"node_modules"},
+		Retention: struct {
+			KeepLast int `yaml:"keep_last"`
+		}{KeepLast: 5}, // Enable retention
+	}
+
+	result := BackupProject(cfg, "test-project")
+	if result.Error != nil {
+		t.Fatalf("BackupProject failed: %v", result.Error)
+	}
+
+	if result.Skipped {
+		t.Error("First backup should not be skipped")
 	}
 }

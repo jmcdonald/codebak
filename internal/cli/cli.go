@@ -11,8 +11,40 @@ import (
 	"github.com/mcdonaldj/codebak/internal/backup"
 	"github.com/mcdonaldj/codebak/internal/config"
 	"github.com/mcdonaldj/codebak/internal/launchd"
+	"github.com/mcdonaldj/codebak/internal/manifest"
 	"github.com/mcdonaldj/codebak/internal/recovery"
 )
+
+// ConfigService provides configuration operations for the CLI.
+type ConfigService interface {
+	Load() (*config.Config, error)
+	Save(cfg *config.Config) error
+	ConfigPath() string
+	DefaultConfig() *config.Config
+}
+
+// BackupService provides backup operations for the CLI.
+type BackupService interface {
+	BackupProject(cfg *config.Config, project string) backup.BackupResult
+	RunBackup(cfg *config.Config) ([]backup.BackupResult, error)
+}
+
+// RecoveryService provides recovery operations for the CLI.
+type RecoveryService interface {
+	Verify(cfg *config.Config, project, version string) error
+	Recover(cfg *config.Config, opts recovery.RecoverOptions) error
+	ListVersions(cfg *config.Config, project string) ([]manifest.BackupEntry, error)
+}
+
+// LaunchdService provides launchd operations for the CLI.
+type LaunchdService interface {
+	IsInstalled() bool
+	Install(hour, minute int) error
+	Uninstall() error
+	Status() (bool, error)
+	PlistPath() string
+	LogPath() string
+}
 
 // CLI represents the command-line interface with injectable dependencies.
 type CLI struct {
@@ -23,6 +55,12 @@ type CLI struct {
 
 	// Exit function for testability (defaults to os.Exit)
 	Exit func(code int)
+
+	// Injectable dependencies (nil means use defaults)
+	ConfigSvc   ConfigService
+	BackupSvc   BackupService
+	RecoverySvc RecoveryService
+	LaunchdSvc  LaunchdService
 
 	// Color functions (can be disabled for testing)
 	green  func(a ...interface{}) string
@@ -64,6 +102,76 @@ func NewForTesting(out, errOut io.Writer, args []string) *CLI {
 		gray:    noColor,
 		red:     noColor,
 	}
+}
+
+// defaultConfigService wraps the config package functions.
+type defaultConfigService struct{}
+
+func (d *defaultConfigService) Load() (*config.Config, error) { return config.Load() }
+func (d *defaultConfigService) Save(cfg *config.Config) error { return cfg.Save() }
+func (d *defaultConfigService) ConfigPath() string            { return config.ConfigPath() }
+func (d *defaultConfigService) DefaultConfig() *config.Config { return config.DefaultConfig() }
+
+// defaultBackupService wraps the backup package functions.
+type defaultBackupService struct{}
+
+func (d *defaultBackupService) BackupProject(cfg *config.Config, project string) backup.BackupResult {
+	return backup.BackupProject(cfg, project)
+}
+func (d *defaultBackupService) RunBackup(cfg *config.Config) ([]backup.BackupResult, error) {
+	return backup.RunBackup(cfg)
+}
+
+// defaultRecoveryService wraps the recovery package functions.
+type defaultRecoveryService struct{}
+
+func (d *defaultRecoveryService) Verify(cfg *config.Config, project, version string) error {
+	return recovery.Verify(cfg, project, version)
+}
+func (d *defaultRecoveryService) Recover(cfg *config.Config, opts recovery.RecoverOptions) error {
+	return recovery.Recover(cfg, opts)
+}
+func (d *defaultRecoveryService) ListVersions(cfg *config.Config, project string) ([]manifest.BackupEntry, error) {
+	return recovery.ListVersions(cfg, project)
+}
+
+// defaultLaunchdService wraps the launchd package functions.
+type defaultLaunchdService struct{}
+
+func (d *defaultLaunchdService) IsInstalled() bool            { return launchd.IsInstalled() }
+func (d *defaultLaunchdService) Install(hour, minute int) error { return launchd.Install(hour, minute) }
+func (d *defaultLaunchdService) Uninstall() error             { return launchd.Uninstall() }
+func (d *defaultLaunchdService) Status() (bool, error)        { return launchd.Status() }
+func (d *defaultLaunchdService) PlistPath() string            { return launchd.PlistPath() }
+func (d *defaultLaunchdService) LogPath() string              { return launchd.LogPath() }
+
+// Helper methods to get the service or default
+func (c *CLI) configSvc() ConfigService {
+	if c.ConfigSvc != nil {
+		return c.ConfigSvc
+	}
+	return &defaultConfigService{}
+}
+
+func (c *CLI) backupSvc() BackupService {
+	if c.BackupSvc != nil {
+		return c.BackupSvc
+	}
+	return &defaultBackupService{}
+}
+
+func (c *CLI) recoverySvc() RecoveryService {
+	if c.RecoverySvc != nil {
+		return c.RecoverySvc
+	}
+	return &defaultRecoveryService{}
+}
+
+func (c *CLI) launchdSvc() LaunchdService {
+	if c.LaunchdSvc != nil {
+		return c.LaunchdSvc
+	}
+	return &defaultLaunchdService{}
 }
 
 // Run executes the CLI with the configured arguments.
@@ -126,18 +234,22 @@ Config: ~/.codebak/config.yaml`)
 
 // InitConfig creates the default config file.
 func (c *CLI) InitConfig() {
-	cfg := config.DefaultConfig()
-	if err := cfg.Save(); err != nil {
+	svc := c.configSvc()
+	cfg := svc.DefaultConfig()
+	if err := svc.Save(cfg); err != nil {
 		fmt.Fprintf(c.Err, "Error saving config: %v\n", err)
 		c.Exit(1)
 		return
 	}
-	fmt.Fprintf(c.Out, "Created config at %s\n", config.ConfigPath())
+	fmt.Fprintf(c.Out, "Created config at %s\n", svc.ConfigPath())
 }
 
 // RunBackup runs the backup command.
 func (c *CLI) RunBackup() {
-	cfg, err := config.Load()
+	cfgSvc := c.configSvc()
+	backupSvc := c.backupSvc()
+
+	cfg, err := cfgSvc.Load()
 	if err != nil {
 		fmt.Fprintf(c.Err, "Error loading config: %v\n", err)
 		c.Exit(1)
@@ -149,10 +261,10 @@ func (c *CLI) RunBackup() {
 	var results []backup.BackupResult
 	if len(c.Args) > 2 {
 		project := c.Args[2]
-		result := backup.BackupProject(cfg, project)
+		result := backupSvc.BackupProject(cfg, project)
 		results = []backup.BackupResult{result}
 	} else {
-		results, err = backup.RunBackup(cfg)
+		results, err = backupSvc.RunBackup(cfg)
 		if err != nil {
 			fmt.Fprintf(c.Err, "Error: %v\n", err)
 			c.Exit(1)
@@ -196,32 +308,36 @@ func (c *CLI) RunBackup() {
 
 // InstallLaunchd installs the launchd schedule.
 func (c *CLI) InstallLaunchd() {
-	if launchd.IsInstalled() {
+	svc := c.launchdSvc()
+
+	if svc.IsInstalled() {
 		fmt.Fprintln(c.Out, "launchd already installed. Uninstall first to reinstall.")
 		c.Exit(1)
 		return
 	}
 
-	if err := launchd.Install(3, 0); err != nil {
+	if err := svc.Install(3, 0); err != nil {
 		fmt.Fprintf(c.Err, "Error installing launchd: %v\n", err)
 		c.Exit(1)
 		return
 	}
 
 	fmt.Fprintf(c.Out, "%s Installed launchd schedule (daily at 3:00 AM)\n", c.green("*"))
-	fmt.Fprintf(c.Out, "  Plist: %s\n", launchd.PlistPath())
-	fmt.Fprintf(c.Out, "  Log:   %s\n", launchd.LogPath())
+	fmt.Fprintf(c.Out, "  Plist: %s\n", svc.PlistPath())
+	fmt.Fprintf(c.Out, "  Log:   %s\n", svc.LogPath())
 }
 
 // UninstallLaunchd removes the launchd schedule.
 func (c *CLI) UninstallLaunchd() {
-	if !launchd.IsInstalled() {
+	svc := c.launchdSvc()
+
+	if !svc.IsInstalled() {
 		fmt.Fprintln(c.Out, "launchd not installed.")
 		c.Exit(1)
 		return
 	}
 
-	if err := launchd.Uninstall(); err != nil {
+	if err := svc.Uninstall(); err != nil {
 		fmt.Fprintf(c.Err, "Error uninstalling launchd: %v\n", err)
 		c.Exit(1)
 		return
@@ -232,7 +348,10 @@ func (c *CLI) UninstallLaunchd() {
 
 // ShowStatus shows the current status.
 func (c *CLI) ShowStatus() {
-	cfg, err := config.Load()
+	cfgSvc := c.configSvc()
+	launchdSvc := c.launchdSvc()
+
+	cfg, err := cfgSvc.Load()
 	if err != nil {
 		fmt.Fprintf(c.Err, "Error loading config: %v\n", err)
 		c.Exit(1)
@@ -242,10 +361,10 @@ func (c *CLI) ShowStatus() {
 	fmt.Fprintln(c.Out, "codebak status:")
 	fmt.Fprintf(c.Out, "  Source:  %s\n", cfg.SourceDir)
 	fmt.Fprintf(c.Out, "  Backup:  %s\n", cfg.BackupDir)
-	fmt.Fprintf(c.Out, "  Config:  %s\n", config.ConfigPath())
+	fmt.Fprintf(c.Out, "  Config:  %s\n", cfgSvc.ConfigPath())
 
-	if launchd.IsInstalled() {
-		loaded, _ := launchd.Status()
+	if launchdSvc.IsInstalled() {
+		loaded, _ := launchdSvc.Status()
 		if loaded {
 			fmt.Fprintf(c.Out, "  launchd: %s\n", c.green("installed & loaded"))
 		} else {
@@ -264,7 +383,10 @@ func (c *CLI) RunVerify() {
 		return
 	}
 
-	cfg, err := config.Load()
+	cfgSvc := c.configSvc()
+	recoverySvc := c.recoverySvc()
+
+	cfg, err := cfgSvc.Load()
 	if err != nil {
 		fmt.Fprintf(c.Err, "Error loading config: %v\n", err)
 		c.Exit(1)
@@ -277,7 +399,7 @@ func (c *CLI) RunVerify() {
 		version = c.Args[3]
 	}
 
-	if err := recovery.Verify(cfg, project, version); err != nil {
+	if err := recoverySvc.Verify(cfg, project, version); err != nil {
 		fmt.Fprintf(c.Err, "Verification failed: %v\n", err)
 		c.Exit(1)
 		return
@@ -294,7 +416,10 @@ func (c *CLI) RunRecover() {
 		return
 	}
 
-	cfg, err := config.Load()
+	cfgSvc := c.configSvc()
+	recoverySvc := c.recoverySvc()
+
+	cfg, err := cfgSvc.Load()
 	if err != nil {
 		fmt.Fprintf(c.Err, "Error loading config: %v\n", err)
 		c.Exit(1)
@@ -331,7 +456,7 @@ func (c *CLI) RunRecover() {
 		fmt.Fprintf(c.Out, "Recovering %s...\n", opts.Project)
 	}
 
-	if err := recovery.Recover(cfg, opts); err != nil {
+	if err := recoverySvc.Recover(cfg, opts); err != nil {
 		fmt.Fprintf(c.Err, "Recovery failed: %v\n", err)
 		c.Exit(1)
 		return
@@ -348,7 +473,10 @@ func (c *CLI) ListBackups() {
 		return
 	}
 
-	cfg, err := config.Load()
+	cfgSvc := c.configSvc()
+	recoverySvc := c.recoverySvc()
+
+	cfg, err := cfgSvc.Load()
 	if err != nil {
 		fmt.Fprintf(c.Err, "Error loading config: %v\n", err)
 		c.Exit(1)
@@ -357,7 +485,7 @@ func (c *CLI) ListBackups() {
 
 	project := c.Args[2]
 
-	backups, err := recovery.ListVersions(cfg, project)
+	backups, err := recoverySvc.ListVersions(cfg, project)
 	if err != nil {
 		fmt.Fprintf(c.Err, "Error: %v\n", err)
 		c.Exit(1)
