@@ -137,7 +137,7 @@ func listZipFiles(zipPath string) (map[string]fileInfo, error) {
 		// Safe conversion: check for overflow before uint64 -> int64
 		size := int64(0)
 		if f.UncompressedSize64 <= math.MaxInt64 {
-			size = int64(f.UncompressedSize64)
+			size = int64(f.UncompressedSize64) // #nosec G115 -- bounds checked above
 		}
 		files[path] = fileInfo{
 			size:  size,
