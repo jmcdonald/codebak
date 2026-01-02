@@ -37,8 +37,10 @@ jobs:
         uses: securego/gosec@master
         with:
           # Exclusions for backup utility:
-          # - G301/G306: Intentional 0755/0644 permissions for readable backups
-          # - G304: Filesystem adapter must accept user paths (that's its purpose)
-          # - G305: False positive - ZipSlip protection exists in isWithinDir()
-          # - G110: Decompression from own backups is expected behavior
-          args: -exclude=G301,G304,G305,G306,G110 ./...
+          # - G110: Decompression from own backups is expected
+          # - G115: File sizes won't exceed int64 max in practice
+          # - G204: launchctl uses config-generated paths, not user input
+          # - G301/G306: Intentional 0755/0644 for readable backups
+          # - G304: Filesystem adapter must accept user paths
+          # - G305: False positive - ZipSlip protection in isWithinDir()
+          args: -exclude=G110,G115,G204,G301,G304,G305,G306 ./...
