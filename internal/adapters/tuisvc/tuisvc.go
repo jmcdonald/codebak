@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/mcdonaldj/codebak/internal/backup"
-	"github.com/mcdonaldj/codebak/internal/config"
-	"github.com/mcdonaldj/codebak/internal/manifest"
-	"github.com/mcdonaldj/codebak/internal/ports"
+	"github.com/jmcdonald/codebak/internal/backup"
+	"github.com/jmcdonald/codebak/internal/config"
+	"github.com/jmcdonald/codebak/internal/manifest"
+	"github.com/jmcdonald/codebak/internal/ports"
 )
 
 // Service implements ports.TUIService using real filesystem operations.

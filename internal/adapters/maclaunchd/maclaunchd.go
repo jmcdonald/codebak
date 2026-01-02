@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"text/template"
 
-	"github.com/mcdonaldj/codebak/internal/ports"
+	"github.com/jmcdonald/codebak/internal/ports"
 )
 
 const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>

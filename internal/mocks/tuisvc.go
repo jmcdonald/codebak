@@ -1,8 +1,8 @@
 package mocks
 
 import (
-	"github.com/mcdonaldj/codebak/internal/config"
-	"github.com/mcdonaldj/codebak/internal/ports"
+	"github.com/jmcdonald/codebak/internal/config"
+	"github.com/jmcdonald/codebak/internal/ports"
 )
 
 // MockTUIService implements ports.TUIService for testing.

@@ -3,7 +3,7 @@ package ports
 import (
 	"time"
 
-	"github.com/mcdonaldj/codebak/internal/config"
+	"github.com/jmcdonald/codebak/internal/config"
 )
 
 // TUIProjectInfo contains project metadata for display.

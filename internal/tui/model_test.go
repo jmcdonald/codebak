@@ -7,9 +7,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/exp/teatest"
-	"github.com/mcdonaldj/codebak/internal/config"
-	"github.com/mcdonaldj/codebak/internal/mocks"
-	"github.com/mcdonaldj/codebak/internal/ports"
+	"github.com/jmcdonald/codebak/internal/config"
+	"github.com/jmcdonald/codebak/internal/mocks"
+	"github.com/jmcdonald/codebak/internal/ports"
 )
 
 func TestNewModelWithService(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/mcdonaldj/codebak/internal/config"
+	"github.com/jmcdonald/codebak/internal/config"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
 

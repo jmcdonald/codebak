@@ -1,4 +1,4 @@
-module github.com/mcdonaldj/codebak
+module github.com/jmcdonald/codebak
 
 go 1.24.0
 

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mcdonaldj/codebak/internal/ports"
+	"github.com/jmcdonald/codebak/internal/ports"
 )
 
 // ExecGitClient implements ports.GitClient using exec.Command.

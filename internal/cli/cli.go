@@ -8,11 +8,11 @@ import (
 	"strings"
 
 	"github.com/fatih/color"
-	"github.com/mcdonaldj/codebak/internal/backup"
-	"github.com/mcdonaldj/codebak/internal/config"
-	"github.com/mcdonaldj/codebak/internal/launchd"
-	"github.com/mcdonaldj/codebak/internal/manifest"
-	"github.com/mcdonaldj/codebak/internal/recovery"
+	"github.com/jmcdonald/codebak/internal/backup"
+	"github.com/jmcdonald/codebak/internal/config"
+	"github.com/jmcdonald/codebak/internal/launchd"
+	"github.com/jmcdonald/codebak/internal/manifest"
+	"github.com/jmcdonald/codebak/internal/recovery"
 )
 
 // ConfigService provides configuration operations for the CLI.

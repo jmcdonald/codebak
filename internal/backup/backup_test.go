@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mcdonaldj/codebak/internal/adapters/ziparchiver"
-	"github.com/mcdonaldj/codebak/internal/config"
-	"github.com/mcdonaldj/codebak/internal/manifest"
-	"github.com/mcdonaldj/codebak/internal/mocks"
+	"github.com/jmcdonald/codebak/internal/adapters/ziparchiver"
+	"github.com/jmcdonald/codebak/internal/config"
+	"github.com/jmcdonald/codebak/internal/manifest"
+	"github.com/jmcdonald/codebak/internal/mocks"
 )
 
 func TestCreateZipRoundTrip(t *testing.T) {

@@ -7,10 +7,10 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/mcdonaldj/codebak/internal/adapters/tuisvc"
-	"github.com/mcdonaldj/codebak/internal/backup"
-	"github.com/mcdonaldj/codebak/internal/config"
-	"github.com/mcdonaldj/codebak/internal/ports"
+	"github.com/jmcdonald/codebak/internal/adapters/tuisvc"
+	"github.com/jmcdonald/codebak/internal/backup"
+	"github.com/jmcdonald/codebak/internal/config"
+	"github.com/jmcdonald/codebak/internal/ports"
 )
 
 // View represents the current view state

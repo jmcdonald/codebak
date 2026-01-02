@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mcdonaldj/codebak/internal/config"
+	"github.com/jmcdonald/codebak/internal/config"
 )
 
 func TestIsBinaryContent(t *testing.T) {

@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mcdonaldj/codebak/internal/adapters/ziparchiver"
-	"github.com/mcdonaldj/codebak/internal/config"
-	"github.com/mcdonaldj/codebak/internal/ports"
+	"github.com/jmcdonald/codebak/internal/adapters/ziparchiver"
+	"github.com/jmcdonald/codebak/internal/config"
+	"github.com/jmcdonald/codebak/internal/ports"
 )
 
 // isWithinDir checks if the target path is within the base directory.

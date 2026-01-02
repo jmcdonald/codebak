@@ -1,7 +1,7 @@
 package mocks
 
 import (
-	"github.com/mcdonaldj/codebak/internal/ports"
+	"github.com/jmcdonald/codebak/internal/ports"
 )
 
 // MockArchiver implements ports.Archiver for testing.

@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mcdonaldj/codebak/internal/adapters/execgit"
-	"github.com/mcdonaldj/codebak/internal/adapters/osfs"
-	"github.com/mcdonaldj/codebak/internal/adapters/ziparchiver"
-	"github.com/mcdonaldj/codebak/internal/config"
-	"github.com/mcdonaldj/codebak/internal/manifest"
-	"github.com/mcdonaldj/codebak/internal/ports"
+	"github.com/jmcdonald/codebak/internal/adapters/execgit"
+	"github.com/jmcdonald/codebak/internal/adapters/osfs"
+	"github.com/jmcdonald/codebak/internal/adapters/ziparchiver"
+	"github.com/jmcdonald/codebak/internal/config"
+	"github.com/jmcdonald/codebak/internal/manifest"
+	"github.com/jmcdonald/codebak/internal/ports"
 )
 
 // BackupResult contains the result of a backup operation.

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/mcdonaldj/codebak/internal/cli"
-	"github.com/mcdonaldj/codebak/internal/tui"
+	"github.com/jmcdonald/codebak/internal/cli"
+	"github.com/jmcdonald/codebak/internal/tui"
 )
 
 // version is set via ldflags at build time: -ldflags "-X main.version=x.y.z"
