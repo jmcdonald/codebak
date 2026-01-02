@@ -1947,3 +1947,181 @@ func TestRunVerifyFromVersionsView(t *testing.T) {
 		t.Errorf("msg = %q, expected to contain 'verified'", msg.msg)
 	}
 }
+
+// ============================================
+// Settings view tests
+// ============================================
+
+func TestSettingsViewNavigation(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
+	m.view = ProjectsView
+
+	// Press ? to enter settings
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = updated.(*Model)
+
+	if m.view != SettingsView {
+		t.Errorf("view = %v, expected SettingsView", m.view)
+	}
+	if m.prevView != ProjectsView {
+		t.Errorf("prevView = %v, expected ProjectsView", m.prevView)
+	}
+	if m.settingsCursor != 0 {
+		t.Errorf("settingsCursor = %d, expected 0", m.settingsCursor)
+	}
+}
+
+func TestSettingsViewCursorMovement(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{}, svc)
+	m.view = SettingsView
+	m.settingsCursor = 0
+
+	// Move down
+	m.moveCursor(1)
+	if m.settingsCursor != 1 {
+		t.Errorf("settingsCursor = %d, expected 1", m.settingsCursor)
+	}
+
+	// Move down again
+	m.moveCursor(1)
+	if m.settingsCursor != 2 {
+		t.Errorf("settingsCursor = %d, expected 2", m.settingsCursor)
+	}
+
+	// Move up
+	m.moveCursor(-1)
+	if m.settingsCursor != 1 {
+		t.Errorf("settingsCursor = %d, expected 1", m.settingsCursor)
+	}
+
+	// Move up past beginning (should clamp to 0)
+	m.moveCursor(-10)
+	if m.settingsCursor != 0 {
+		t.Errorf("settingsCursor = %d, expected 0", m.settingsCursor)
+	}
+
+	// Move down past end (should clamp to 3)
+	m.moveCursor(100)
+	if m.settingsCursor != 3 {
+		t.Errorf("settingsCursor = %d, expected 3 (max)", m.settingsCursor)
+	}
+}
+
+func TestSettingsViewBack(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{}, svc)
+	m.view = SettingsView
+	m.prevView = VersionsView
+
+	// Press esc to go back
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(*Model)
+
+	if m.view != VersionsView {
+		t.Errorf("view = %v, expected VersionsView", m.view)
+	}
+}
+
+func TestRenderSettingsView(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/my/backups"}, svc)
+	m.view = SettingsView
+	m.settingsCursor = 0
+	m.width = 80
+
+	output := m.renderSettingsView()
+
+	// Check for title
+	if !contains(output, "Settings") {
+		t.Error("output should contain 'Settings' title")
+	}
+
+	// Check for backup directory setting
+	if !contains(output, "Backup Directory") {
+		t.Error("output should contain 'Backup Directory'")
+	}
+	if !contains(output, "/my/backups") {
+		t.Error("output should contain backup dir path")
+	}
+
+	// Check for other settings
+	if !contains(output, "Color Theme") {
+		t.Error("output should contain 'Color Theme'")
+	}
+	if !contains(output, "Migrate Backups") {
+		t.Error("output should contain 'Migrate Backups'")
+	}
+	if !contains(output, "About") {
+		t.Error("output should contain 'About'")
+	}
+}
+
+func TestRenderSettingsViewCursorHighlight(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/backups"}, svc)
+	m.view = SettingsView
+	m.settingsCursor = 1 // Color Theme
+	m.width = 80
+
+	output := m.renderSettingsView()
+
+	// The selected item should have the selection indicator
+	if !contains(output, "Color Theme") {
+		t.Error("output should contain 'Color Theme'")
+	}
+}
+
+func TestSettingsViewInView(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/backups"}, svc)
+	m.view = SettingsView
+	m.width = 80
+	m.height = 24
+
+	output := m.View()
+
+	if !contains(output, "Settings") {
+		t.Error("View() should render settings view")
+	}
+}
+
+func TestSettingsKeyFromMultipleViews(t *testing.T) {
+	views := []View{ProjectsView, VersionsView, DiffSelectView, DiffResultView, FileDiffView}
+
+	for _, startView := range views {
+		svc := mocks.NewMockTUIService()
+		m := NewModelWithConfig(&config.Config{}, svc)
+		m.view = startView
+		m.versions = []VersionItem{{File: "v1.zip"}}
+		m.diffResult = &DiffResult{Changes: []FileChange{{Path: "test.go"}}}
+		m.fileDiffResult = &FileDiffResult{Lines: []DiffLine{{Content: "test"}}}
+
+		// Press ? to enter settings
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+		m = updated.(*Model)
+
+		if m.view != SettingsView {
+			t.Errorf("from %v: view = %v, expected SettingsView", startView, m.view)
+		}
+		if m.prevView != startView {
+			t.Errorf("from %v: prevView = %v, expected %v", startView, m.prevView, startView)
+		}
+	}
+}
+
+func TestSettingsKeyDoesNotEnterFromSettings(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{}, svc)
+	m.view = SettingsView
+	m.prevView = ProjectsView
+
+	// Press ? while already in settings - should do nothing
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = updated.(*Model)
+
+	if m.view != SettingsView {
+		t.Errorf("view should remain SettingsView, got %v", m.view)
+	}
+}
