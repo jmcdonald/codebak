@@ -28,3 +28,6 @@ Thumbs.db
 
 # Beads local database
 .beads/
+
+# Claude Code session files
+.claude/
