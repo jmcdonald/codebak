@@ -36,5 +36,9 @@ jobs:
       - name: Run gosec security scanner
         uses: securego/gosec@master
         with:
-          # Exclude G301/G306: Backup utility intentionally uses 0755/0644 for readable backups
-          args: -exclude=G301,G306 ./...
+          # Exclusions for backup utility:
+          # - G301/G306: Intentional 0755/0644 permissions for readable backups
+          # - G304: Filesystem adapter must accept user paths (that's its purpose)
+          # - G305: False positive - ZipSlip protection exists in isWithinDir()
+          # - G110: Decompression from own backups is expected behavior
+          args: -exclude=G301,G304,G305,G306,G110 ./...
