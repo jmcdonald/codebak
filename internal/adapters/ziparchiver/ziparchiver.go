@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -168,8 +169,18 @@ func (a *ZipArchiver) Extract(zipPath, destDir string) error {
 	return nil
 }
 
+// MaxDecompressSize is the maximum allowed uncompressed file size (10GB).
+// This prevents decompression bomb attacks (G110).
+const MaxDecompressSize = 10 * 1024 * 1024 * 1024 // 10GB
+
 // extractFile extracts a single file from the zip.
 func extractFile(f *zip.File, destPath string) error {
+	// SECURITY: Limit decompression size to prevent zip bombs (G110)
+	declaredSize := f.UncompressedSize64
+	if declaredSize > MaxDecompressSize {
+		return fmt.Errorf("file too large: %d bytes exceeds limit of %d bytes", declaredSize, MaxDecompressSize)
+	}
+
 	outFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
 	if err != nil {
 		return err
@@ -182,8 +193,20 @@ func extractFile(f *zip.File, destPath string) error {
 	}
 	defer func() { _ = rc.Close() }()
 
-	_, err = io.Copy(outFile, rc)
-	return err
+	// Use LimitReader to enforce size limit during decompression
+	// Add 1 byte to detect if actual size exceeds declared size
+	limitedReader := io.LimitReader(rc, int64(declaredSize)+1)
+	written, err := io.Copy(outFile, limitedReader)
+	if err != nil {
+		return err
+	}
+
+	// Check if more data was available than declared (corrupted/malicious zip)
+	if written > int64(declaredSize) {
+		return fmt.Errorf("decompressed size exceeds declared size")
+	}
+
+	return nil
 }
 
 // isWithinDir checks if the target path is within the base directory.
@@ -219,8 +242,13 @@ func (a *ZipArchiver) List(zipPath string) (map[string]ports.FileInfo, error) {
 			name = name[idx+1:]
 		}
 
+		// Safe conversion: check for overflow before uint64 -> int64
+		size := int64(0)
+		if f.UncompressedSize64 <= math.MaxInt64 {
+			size = int64(f.UncompressedSize64)
+		}
 		files[name] = ports.FileInfo{
-			Size:  int64(f.UncompressedSize64),
+			Size:  size,
 			CRC32: f.CRC32,
 		}
 	}
