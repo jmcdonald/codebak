@@ -96,14 +96,57 @@ install() {
         "$INSTALL_DIR/$BINARY" version
         echo ""
 
-        # Check if in PATH
+        # Add to PATH if not already there
         if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
-            warn "Add $INSTALL_DIR to your PATH:"
-            echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+            add_to_path
         fi
     else
         error "Installation failed"
     fi
+}
+
+# Add install dir to shell PATH
+add_to_path() {
+    SHELL_NAME=$(basename "$SHELL")
+    PATH_EXPORT="export PATH=\"\$PATH:$INSTALL_DIR\""
+
+    case "$SHELL_NAME" in
+        zsh)
+            RC_FILE="$HOME/.zshrc"
+            ;;
+        bash)
+            # Prefer .bashrc, fall back to .bash_profile
+            if [ -f "$HOME/.bashrc" ]; then
+                RC_FILE="$HOME/.bashrc"
+            else
+                RC_FILE="$HOME/.bash_profile"
+            fi
+            ;;
+        fish)
+            RC_FILE="$HOME/.config/fish/config.fish"
+            PATH_EXPORT="set -gx PATH \$PATH $INSTALL_DIR"
+            ;;
+        *)
+            warn "Unknown shell: $SHELL_NAME"
+            warn "Add to your PATH manually:"
+            echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+            return
+            ;;
+    esac
+
+    # Check if already in rc file
+    if [ -f "$RC_FILE" ] && grep -q "$INSTALL_DIR" "$RC_FILE" 2>/dev/null; then
+        info "PATH already configured in $RC_FILE"
+        return
+    fi
+
+    # Add to rc file
+    echo "" >> "$RC_FILE"
+    echo "# Added by codebak installer" >> "$RC_FILE"
+    echo "$PATH_EXPORT" >> "$RC_FILE"
+
+    info "Added $INSTALL_DIR to PATH in $RC_FILE"
+    warn "Run 'source $RC_FILE' or open a new terminal to use codebak"
 }
 
 main() {
