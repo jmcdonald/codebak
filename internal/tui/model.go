@@ -304,6 +304,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Drill into file diff
 				change := m.diffResult.Changes[m.diffCursor]
 				return m, m.computeFileDiff(change)
+			} else if m.view == SettingsView {
+				m.handleSettingsSelect()
 			}
 
 		case key.Matches(msg, keys.Back):
@@ -412,6 +414,20 @@ func (m *Model) moveCursor(delta int) {
 		if m.settingsCursor >= settingsCount {
 			m.settingsCursor = settingsCount - 1
 		}
+	}
+}
+
+// handleSettingsSelect handles Enter key press in SettingsView
+func (m *Model) handleSettingsSelect() {
+	switch m.settingsCursor {
+	case 0: // Backup Directory
+		m.statusMsg = fmt.Sprintf("Backup directory: %s", m.config.BackupDir)
+	case 1: // Color Theme
+		m.statusMsg = "Theme selection coming soon"
+	case 2: // Migrate Backups
+		m.statusMsg = "Use 'codebak move <path>' from CLI to migrate backups"
+	case 3: // About
+		m.statusMsg = "codebak - Incremental Code Backup Tool"
 	}
 }
 

@@ -2125,3 +2125,27 @@ func TestSettingsKeyDoesNotEnterFromSettings(t *testing.T) {
 		t.Errorf("view should remain SettingsView, got %v", m.view)
 	}
 }
+
+func TestSettingsSelectEnter(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
+	m.view = SettingsView
+	m.settingsCursor = 0 // Backup Directory
+
+	// Press Enter on Backup Directory
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+
+	if !contains(m.statusMsg, "/test/backups") {
+		t.Errorf("statusMsg should contain backup dir, got %q", m.statusMsg)
+	}
+
+	// Test About option
+	m.settingsCursor = 3 // About
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+
+	if !contains(m.statusMsg, "codebak") {
+		t.Errorf("statusMsg should contain 'codebak' for About, got %q", m.statusMsg)
+	}
+}
