@@ -11,8 +11,19 @@ import (
 // ErrNoHomeDir is returned when the home directory cannot be determined
 var ErrNoHomeDir = fmt.Errorf("cannot determine home directory: HOME environment variable not set")
 
+// Source represents a directory to scan for projects
+type Source struct {
+	Path  string `yaml:"path"`
+	Label string `yaml:"label,omitempty"` // Display label (defaults to path basename)
+	Icon  string `yaml:"icon,omitempty"`  // Emoji icon for TUI display
+}
+
 type Config struct {
-	SourceDir string   `yaml:"source_dir"`
+	// Deprecated: Use Sources instead. Kept for backwards compatibility.
+	SourceDir string   `yaml:"source_dir,omitempty"`
+	Sources   []Source `yaml:"sources,omitempty"`
+	// Individual projects outside source dirs (a la carte)
+	Projects  []string `yaml:"projects,omitempty"`
 	BackupDir string   `yaml:"backup_dir"`
 	Schedule  string   `yaml:"schedule"`
 	Time      string   `yaml:"time"`
@@ -22,13 +33,30 @@ type Config struct {
 	} `yaml:"retention"`
 }
 
+// GetSources returns all sources, migrating from SourceDir if needed
+func (c *Config) GetSources() []Source {
+	// If new Sources format is used, return it
+	if len(c.Sources) > 0 {
+		return c.Sources
+	}
+	// Migrate from old SourceDir format
+	if c.SourceDir != "" {
+		return []Source{{Path: c.SourceDir, Label: "Code", Icon: "📁"}}
+	}
+	return nil
+}
+
 func DefaultConfig() (*Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrNoHomeDir, err)
 	}
+	codeDir := filepath.Join(home, "code")
 	return &Config{
-		SourceDir: filepath.Join(home, "code"),
+		SourceDir: codeDir, // Deprecated but kept for backward compatibility
+		Sources: []Source{
+			{Path: codeDir, Label: "Code", Icon: "📁"},
+		},
 		BackupDir: filepath.Join(home, ".backups"),
 		Schedule:  "daily",
 		Time:      "03:00",
