@@ -245,21 +245,45 @@ func (s *Service) BackupProject(cfg *config.Config, project string) BackupResult
 	return result
 }
 
-// RunBackup backs up all changed projects.
+// RunBackup backs up all changed projects from all configured sources.
 func (s *Service) RunBackup(cfg *config.Config) ([]BackupResult, error) {
-	sourceDir, err := config.ExpandPath(cfg.SourceDir)
-	if err != nil {
-		return nil, err
-	}
-
-	projects, err := s.ListProjects(sourceDir)
-	if err != nil {
-		return nil, err
-	}
-
 	var results []BackupResult
-	for _, project := range projects {
-		result := s.BackupProject(cfg, project)
+	seen := make(map[string]bool) // Track project names to avoid duplicates
+
+	// Iterate over all sources
+	for _, source := range cfg.GetSources() {
+		sourceDir, err := config.ExpandPath(source.Path)
+		if err != nil {
+			continue // Skip sources that can't be expanded
+		}
+
+		projects, err := s.ListProjects(sourceDir)
+		if err != nil {
+			continue // Skip sources that can't be read
+		}
+
+		for _, project := range projects {
+			if seen[project] {
+				continue
+			}
+			seen[project] = true
+			result := s.BackupProject(cfg, project)
+			results = append(results, result)
+		}
+	}
+
+	// Also backup individual projects from cfg.Projects
+	for _, projectPath := range cfg.Projects {
+		expandedPath, err := config.ExpandPath(projectPath)
+		if err != nil {
+			continue
+		}
+		name := filepath.Base(expandedPath)
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		result := s.BackupProject(cfg, name)
 		results = append(results, result)
 	}
 

@@ -734,9 +734,14 @@ func TestRunBackupListProjectsError(t *testing.T) {
 		BackupDir: "/test/backups",
 	}
 
-	_, err := svc.RunBackup(cfg)
-	if err == nil {
-		t.Error("RunBackup should fail when ListProjects fails")
+	// With multi-source support, failed sources are skipped gracefully
+	// (returns empty results instead of error)
+	results, err := svc.RunBackup(cfg)
+	if err != nil {
+		t.Errorf("RunBackup should not fail with multi-source; got error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("Expected 0 results when source fails, got %d", len(results))
 	}
 }
 

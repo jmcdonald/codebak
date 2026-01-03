@@ -29,11 +29,13 @@ const (
 
 // ProjectItem represents a project in the list
 type ProjectItem struct {
-	Name       string
-	Path       string
-	Versions   int
-	LastBackup time.Time
-	TotalSize  int64
+	Name        string
+	Path        string
+	SourceLabel string
+	SourceIcon  string
+	Versions    int
+	LastBackup  time.Time
+	TotalSize   int64
 }
 
 // VersionItem represents a backup version
@@ -198,11 +200,13 @@ func (m *Model) loadProjects() error {
 	m.projects = nil
 	for _, p := range projects {
 		m.projects = append(m.projects, ProjectItem{
-			Name:       p.Name,
-			Path:       p.Path,
-			Versions:   p.Versions,
-			LastBackup: p.LastBackup,
-			TotalSize:  p.TotalSize,
+			Name:        p.Name,
+			Path:        p.Path,
+			SourceLabel: p.SourceLabel,
+			SourceIcon:  p.SourceIcon,
+			Versions:    p.Versions,
+			LastBackup:  p.LastBackup,
+			TotalSize:   p.TotalSize,
 		})
 	}
 
@@ -622,8 +626,14 @@ func (m *Model) renderProjectsView() string {
 			lastBackup = relativeTime(p.LastBackup)
 		}
 
-		line := fmt.Sprintf("%s%-28s %8s %12s %s",
-			cursor, truncate(p.Name, 28), versions, size, lastBackup)
+		// Show source icon if available
+		icon := ""
+		if p.SourceIcon != "" {
+			icon = p.SourceIcon + " "
+		}
+
+		line := fmt.Sprintf("%s%s%-26s %8s %12s %s",
+			cursor, icon, truncate(p.Name, 26), versions, size, lastBackup)
 		b.WriteString(style.Render(line))
 		b.WriteString("\n")
 	}

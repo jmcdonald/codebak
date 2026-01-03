@@ -24,27 +24,76 @@ func (s *Service) LoadConfig() (*config.Config, error) {
 	return config.Load()
 }
 
-// ListProjects returns all projects with their metadata.
+// ListProjects returns all projects with their metadata from all configured sources.
 func (s *Service) ListProjects(cfg *config.Config) ([]ports.TUIProjectInfo, error) {
-	sourceDir, err := config.ExpandPath(cfg.SourceDir)
-	if err != nil {
-		return nil, err
-	}
 	backupDir, err := config.ExpandPath(cfg.BackupDir)
 	if err != nil {
 		return nil, err
 	}
 
-	projects, err := backup.ListProjects(sourceDir)
-	if err != nil {
-		return nil, err
+	var result []ports.TUIProjectInfo
+	seen := make(map[string]bool) // Track project names to avoid duplicates
+
+	// Iterate over all sources
+	for _, source := range cfg.GetSources() {
+		sourceDir, err := config.ExpandPath(source.Path)
+		if err != nil {
+			continue // Skip sources that can't be expanded
+		}
+
+		projects, err := backup.ListProjects(sourceDir)
+		if err != nil {
+			continue // Skip sources that can't be read
+		}
+
+		for _, name := range projects {
+			// Skip if we've already seen this project name
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+
+			item := ports.TUIProjectInfo{
+				Name:        name,
+				Path:        filepath.Join(sourceDir, name),
+				SourceLabel: source.Label,
+				SourceIcon:  source.Icon,
+			}
+
+			// Load manifest if exists
+			mf, err := manifest.Load(backupDir, name)
+			if err == nil && len(mf.Backups) > 0 {
+				item.Versions = len(mf.Backups)
+				latest := mf.LatestBackup()
+				if latest != nil {
+					item.LastBackup = latest.CreatedAt
+				}
+				for _, b := range mf.Backups {
+					item.TotalSize += b.SizeBytes
+				}
+			}
+
+			result = append(result, item)
+		}
 	}
 
-	var result []ports.TUIProjectInfo
-	for _, name := range projects {
+	// Also include individual projects from cfg.Projects
+	for _, projectPath := range cfg.Projects {
+		expandedPath, err := config.ExpandPath(projectPath)
+		if err != nil {
+			continue
+		}
+		name := filepath.Base(expandedPath)
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+
 		item := ports.TUIProjectInfo{
-			Name: name,
-			Path: filepath.Join(sourceDir, name),
+			Name:        name,
+			Path:        expandedPath,
+			SourceLabel: "Project",
+			SourceIcon:  "📌",
 		}
 
 		// Load manifest if exists

@@ -8,11 +8,13 @@ import (
 
 // TUIProjectInfo contains project metadata for display.
 type TUIProjectInfo struct {
-	Name       string
-	Path       string
-	Versions   int
-	LastBackup time.Time
-	TotalSize  int64
+	Name        string
+	Path        string
+	SourceLabel string // Label of the source directory (e.g., "Code", "Work")
+	SourceIcon  string // Icon for display (e.g., "📁", "💼")
+	Versions    int
+	LastBackup  time.Time
+	TotalSize   int64
 }
 
 // TUIVersionInfo contains backup version metadata for display.
