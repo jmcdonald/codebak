@@ -524,20 +524,6 @@ func (m *Model) calculateBackupDirSize() tea.Cmd {
 	}
 }
 
-// getBackupDirSize calculates total size of backup directory (sync, for confirmation view)
-func (m *Model) getBackupDirSize() string {
-	var totalSize int64
-	_ = filepath.Walk(m.config.BackupDir, func(_ string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Skip errors, continue walking
-		}
-		if !info.IsDir() {
-			totalSize += info.Size()
-		}
-		return nil
-	})
-	return backup.FormatSize(totalSize)
-}
 
 // handleFolderPicker handles messages in MoveInputView (folder picker)
 func (m *Model) handleFolderPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1428,10 +1414,7 @@ func (m *Model) renderMoveConfirmView() string {
 
 	// Stats
 	projectCount := len(m.projects)
-	totalSize := m.getBackupDirSize()
 	b.WriteString(dimStyle.Render(fmt.Sprintf("  Projects: %d", projectCount)))
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render(fmt.Sprintf("  Total size: %s", totalSize)))
 	b.WriteString("\n\n")
 
 	// Warning
