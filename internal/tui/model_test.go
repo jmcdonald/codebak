@@ -2132,15 +2132,12 @@ func TestSettingsSelectEnter(t *testing.T) {
 	m.view = SettingsView
 	m.settingsCursor = 0 // Backup Directory
 
-	// Press Enter on Backup Directory - shows "calculating..." immediately
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Press Enter on Backup Directory - shows path immediately (no blocking)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(*Model)
 
-	if !contains(m.statusMsg, "calculating") {
-		t.Errorf("statusMsg should show 'calculating...', got %q", m.statusMsg)
-	}
-	if cmd == nil {
-		t.Error("cmd should not be nil (async size calculation)")
+	if !contains(m.statusMsg, "/test/backups") {
+		t.Errorf("statusMsg should show backup path, got %q", m.statusMsg)
 	}
 
 	// Test About option
