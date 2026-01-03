@@ -148,7 +148,23 @@ retention:
 | `s` | Swap diff sides (in file diff view) |
 | `v` | Verify backup |
 | `r` | Recover version |
+| `?` | Open Settings |
 | `q` | Quit |
+
+### Settings View
+
+| Key | Action |
+| --- | ------ |
+| `j` / `k` | Navigate settings |
+| `Enter` | Select setting |
+| `Esc` | Return to previous view |
+
+**Migrate Backups** opens a folder picker with shortcuts:
+- `~` jump to home, `.` jump to backup dir, `-` go back
+- `/` or `g` type path directly
+- `s` or `Space` select current folder
+
+See [docs/folder-picker.md](docs/folder-picker.md) for full documentation.
 
 ### Recovery Options
 
