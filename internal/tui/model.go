@@ -486,9 +486,9 @@ func (m *Model) moveCursor(delta int) {
 // handleSettingsSelect handles Enter key press in SettingsView
 func (m *Model) handleSettingsSelect() tea.Cmd {
 	switch m.settingsCursor {
-	case 0: // Backup Directory
-		size := m.getBackupDirSize()
-		m.statusMsg = fmt.Sprintf("📁 %s (%s used)", m.config.BackupDir, size)
+	case 0: // Backup Directory - calculate size async
+		m.statusMsg = fmt.Sprintf("📁 %s (calculating...)", m.config.BackupDir)
+		return m.calculateBackupDirSize()
 	case 1: // Color Theme
 		m.statusMsg = "🎨 Theme: purple (default) — more themes coming in future release"
 	case 2: // Migrate Backups
@@ -503,7 +503,28 @@ func (m *Model) handleSettingsSelect() tea.Cmd {
 	return nil
 }
 
-// getBackupDirSize calculates total size of backup directory
+// calculateBackupDirSize returns a Cmd that calculates size asynchronously
+func (m *Model) calculateBackupDirSize() tea.Cmd {
+	backupDir := m.config.BackupDir
+	return func() tea.Msg {
+		var totalSize int64
+		_ = filepath.Walk(backupDir, func(_ string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil // Skip errors, continue walking
+			}
+			if !info.IsDir() {
+				totalSize += info.Size()
+			}
+			return nil
+		})
+		return statusMsg{
+			msg: fmt.Sprintf("📁 %s (%s used)", backupDir, backup.FormatSize(totalSize)),
+			err: false,
+		}
+	}
+}
+
+// getBackupDirSize calculates total size of backup directory (sync, for confirmation view)
 func (m *Model) getBackupDirSize() string {
 	var totalSize int64
 	_ = filepath.Walk(m.config.BackupDir, func(_ string, info os.FileInfo, err error) error {
