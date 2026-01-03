@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jmcdonald/codebak/internal/adapters/tuisvc"
 	"github.com/jmcdonald/codebak/internal/backup"
@@ -25,8 +26,9 @@ const (
 	DiffSelectView // Selecting versions to compare
 	DiffResultView // Showing diff results (file list)
 	FileDiffView   // Showing actual file content diff
-	SettingsView   // Settings/configuration view
-	MoveInputView  // Text input for move path
+	SettingsView    // Settings/configuration view
+	MoveInputView   // Folder picker for move path
+	MoveConfirmView // Confirmation before moving
 )
 
 // ProjectItem represents a project in the list
@@ -83,7 +85,11 @@ type Model struct {
 	prevView       View // View to return to after settings
 
 	// Move input view (folder picker)
-	folderPicker filepicker.Model
+	folderPicker       filepicker.Model
+	folderPickerHist   []string // History of visited directories
+	folderPickerTyping bool     // True when typing path directly
+	pathInput          textinput.Model
+	pendingMovePath    string // Path selected, awaiting confirmation
 
 	// Status message
 	statusMsg string
@@ -176,6 +182,7 @@ func NewModelWithService(version string, svc ports.TUIService) (*Model, error) {
 		version:      version,
 		view:         ProjectsView,
 		folderPicker: newFolderPicker(),
+		pathInput:    newPathInput(),
 	}
 
 	if err := m.loadProjects(); err != nil {
@@ -201,6 +208,15 @@ func newFolderPicker() filepicker.Model {
 	return fp
 }
 
+// newPathInput creates a text input for typing paths directly
+func newPathInput() textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = "/path/to/folder or ~/folder"
+	ti.CharLimit = 256
+	ti.Width = 50
+	return ti
+}
+
 // NewModelWithConfig creates a new TUI model with a provided config and service.
 // This is useful for testing with pre-configured state.
 func NewModelWithConfig(cfg *config.Config, svc ports.TUIService) *Model {
@@ -210,6 +226,7 @@ func NewModelWithConfig(cfg *config.Config, svc ports.TUIService) *Model {
 		version:      "test",
 		view:         ProjectsView,
 		folderPicker: newFolderPicker(),
+		pathInput:    newPathInput(),
 	}
 }
 
@@ -267,6 +284,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle folder picker view for ALL message types (it needs readDirMsg etc)
 	if m.view == MoveInputView {
 		return m.handleFolderPicker(msg)
+	}
+
+	// Handle confirmation dialog
+	if m.view == MoveConfirmView {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			return m.handleMoveConfirm(keyMsg)
+		}
+		return m, nil
 	}
 
 	switch msg := msg.(type) {
@@ -493,6 +518,11 @@ func (m *Model) getBackupDirSize() string {
 
 // handleFolderPicker handles messages in MoveInputView (folder picker)
 func (m *Model) handleFolderPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle typing mode separately
+	if m.folderPickerTyping {
+		return m.handlePathInput(msg)
+	}
+
 	// Check for special keys first
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
 		switch keyMsg.String() {
@@ -500,8 +530,29 @@ func (m *Model) handleFolderPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.view = SettingsView
 			return m, nil
 		case "s", " ": // Select current directory
-			m.view = SettingsView
-			return m, m.executeMoveBackups(m.folderPicker.CurrentDirectory)
+			m.pendingMovePath = m.folderPicker.CurrentDirectory
+			m.view = MoveConfirmView
+			return m, nil
+		case "~": // Jump to home
+			m.folderPickerHist = append(m.folderPickerHist, m.folderPicker.CurrentDirectory)
+			m.folderPicker.CurrentDirectory, _ = os.UserHomeDir()
+			return m, m.folderPicker.Init()
+		case ".": // Jump to current backup dir
+			m.folderPickerHist = append(m.folderPickerHist, m.folderPicker.CurrentDirectory)
+			m.folderPicker.CurrentDirectory = m.config.BackupDir
+			return m, m.folderPicker.Init()
+		case "-": // Go back in history
+			if len(m.folderPickerHist) > 0 {
+				prev := m.folderPickerHist[len(m.folderPickerHist)-1]
+				m.folderPickerHist = m.folderPickerHist[:len(m.folderPickerHist)-1]
+				m.folderPicker.CurrentDirectory = prev
+				return m, m.folderPicker.Init()
+			}
+		case "/", "g": // Enter typing mode
+			m.folderPickerTyping = true
+			m.pathInput.SetValue("")
+			m.pathInput.Focus()
+			return m, nil
 		}
 	}
 
@@ -511,11 +562,67 @@ func (m *Model) handleFolderPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Check if user selected a directory (by pressing enter on it)
 	if didSelect, path := m.folderPicker.DidSelectFile(msg); didSelect {
-		m.view = SettingsView
-		return m, m.executeMoveBackups(path)
+		m.pendingMovePath = path
+		m.view = MoveConfirmView
+		return m, nil
 	}
 
 	return m, cmd
+}
+
+// handlePathInput handles typing mode in folder picker
+func (m *Model) handlePathInput(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		switch keyMsg.Type {
+		case tea.KeyEsc:
+			m.folderPickerTyping = false
+			m.pathInput.Blur()
+			return m, nil
+		case tea.KeyEnter:
+			path := m.pathInput.Value()
+			if path == "" {
+				m.folderPickerTyping = false
+				m.pathInput.Blur()
+				return m, nil
+			}
+			// Expand ~ if present
+			if len(path) > 0 && path[0] == '~' {
+				home, _ := os.UserHomeDir()
+				path = filepath.Join(home, path[1:])
+			}
+			// Validate path exists and is directory
+			info, err := os.Stat(path)
+			if err != nil || !info.IsDir() {
+				m.statusMsg = "Invalid path or not a directory"
+				m.statusErr = true
+				return m, nil
+			}
+			// Navigate to the path
+			m.folderPickerHist = append(m.folderPickerHist, m.folderPicker.CurrentDirectory)
+			m.folderPicker.CurrentDirectory = path
+			m.folderPickerTyping = false
+			m.pathInput.Blur()
+			return m, m.folderPicker.Init()
+		}
+	}
+
+	// Update text input
+	var cmd tea.Cmd
+	m.pathInput, cmd = m.pathInput.Update(msg)
+	return m, cmd
+}
+
+// handleMoveConfirm handles the confirmation dialog
+func (m *Model) handleMoveConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		m.view = SettingsView
+		return m, m.executeMoveBackups(m.pendingMovePath)
+	case "n", "N", "esc", "q":
+		m.view = MoveInputView
+		return m, nil
+	}
+	return m, nil
 }
 
 // executeMoveBackups moves backups to new location
@@ -704,6 +811,8 @@ func (m *Model) View() string {
 		content = m.renderSettingsView()
 	case MoveInputView:
 		content = m.renderMoveInputView()
+	case MoveConfirmView:
+		content = m.renderMoveConfirmView()
 	}
 
 	return appStyle.Render(content)
@@ -1243,8 +1352,17 @@ func (m *Model) renderMoveInputView() string {
 	b.WriteString(dimStyle.Render(fmt.Sprintf("  Browsing: %s", m.folderPicker.CurrentDirectory)))
 	b.WriteString("\n\n")
 
-	// Folder picker
-	b.WriteString(m.folderPicker.View())
+	// Path input (typing mode) or folder picker
+	if m.folderPickerTyping {
+		b.WriteString("  ")
+		b.WriteString(m.pathInput.View())
+		b.WriteString("\n\n")
+		b.WriteString(dimStyle.Render("  Press Enter to navigate, Esc to cancel"))
+		b.WriteString("\n\n")
+	} else {
+		// Folder picker
+		b.WriteString(m.folderPicker.View())
+	}
 
 	// Status message area
 	if m.statusMsg != "" {
@@ -1257,8 +1375,53 @@ func (m *Model) renderMoveInputView() string {
 	}
 
 	// Help
-	help := "[↑/↓] navigate  [enter] open  [s/space] use this folder  [esc] back  [q] cancel"
+	var help string
+	if m.folderPickerTyping {
+		help = "[enter] go  [esc] cancel"
+	} else {
+		help = "[↑/↓] navigate  [enter] open  [s] select  [/] type path  [~] home  [.] backups  [-] prev  [q] cancel"
+	}
 	b.WriteString(helpStyle.Render(help))
+
+	return b.String()
+}
+
+func (m *Model) renderMoveConfirmView() string {
+	var b strings.Builder
+
+	// Title
+	title := titleStyle.Render(" ⚠️  Confirm Move ")
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	// From/To paths
+	b.WriteString(dimStyle.Render("  From:"))
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("    %s\n", m.config.BackupDir))
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("  To:"))
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("    %s\n", m.pendingMovePath))
+	b.WriteString("\n")
+
+	// Stats
+	projectCount := len(m.projects)
+	totalSize := m.getBackupDirSize()
+	b.WriteString(dimStyle.Render(fmt.Sprintf("  Projects: %d", projectCount)))
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render(fmt.Sprintf("  Total size: %s", totalSize)))
+	b.WriteString("\n\n")
+
+	// Warning
+	b.WriteString("  This will move all backups to the new location.\n")
+	b.WriteString("\n")
+
+	// Confirmation prompt
+	b.WriteString("  ")
+	b.WriteString(selectedStyle.Render("[y] Confirm"))
+	b.WriteString("  ")
+	b.WriteString(dimStyle.Render("[n] Cancel"))
+	b.WriteString("\n")
 
 	return b.String()
 }
