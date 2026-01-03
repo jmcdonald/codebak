@@ -14,7 +14,7 @@ var version = "dev"
 func main() {
 	// Handle TUI mode (no args or ui/tui command)
 	if len(os.Args) < 2 || os.Args[1] == "ui" || os.Args[1] == "tui" {
-		if err := tui.Run(); err != nil {
+		if err := tui.Run(version); err != nil {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)
 		}

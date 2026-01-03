@@ -23,7 +23,7 @@ func TestNewModelWithService(t *testing.T) {
 		{Name: "project-b", Path: "/test/source/project-b", Versions: 0},
 	}
 
-	m, err := NewModelWithService(svc)
+	m, err := NewModelWithService("test", svc)
 	if err != nil {
 		t.Fatalf("NewModelWithService failed: %v", err)
 	}
@@ -1478,7 +1478,7 @@ func TestNewModelWithServiceConfigError(t *testing.T) {
 	svc := mocks.NewMockTUIService()
 	svc.ConfigError = errors.New("config not found")
 
-	_, err := NewModelWithService(svc)
+	_, err := NewModelWithService("test", svc)
 	if err == nil {
 		t.Error("NewModelWithService should return error when config fails")
 	}
@@ -1492,7 +1492,7 @@ func TestNewModelWithServiceProjectsError(t *testing.T) {
 	svc.ConfigResult = &config.Config{}
 	svc.ProjectsError = errors.New("projects failed")
 
-	_, err := NewModelWithService(svc)
+	_, err := NewModelWithService("test", svc)
 	if err == nil {
 		t.Error("NewModelWithService should return error when projects fail")
 	}
@@ -2147,5 +2147,38 @@ func TestSettingsSelectEnter(t *testing.T) {
 
 	if !contains(m.statusMsg, "codebak") {
 		t.Errorf("statusMsg should contain 'codebak' for About, got %q", m.statusMsg)
+	}
+}
+
+func TestSettingsShowsVersion(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
+	m.version = "1.2.3"
+	m.view = SettingsView
+
+	output := m.View()
+
+	if !contains(output, "v1.2.3") {
+		t.Errorf("Settings view should show version, got %q", output)
+	}
+}
+
+func TestTruncatePath(t *testing.T) {
+	tests := []struct {
+		path     string
+		max      int
+		expected string
+	}{
+		{"/short", 20, "/short"},
+		{"/very/long/path/to/somewhere", 20, "/very/l.../somewhere"},
+		{"/tiny", 10, "/tiny"},
+		{"/a/b", 3, "..."},
+	}
+
+	for _, tc := range tests {
+		result := truncatePath(tc.path, tc.max)
+		if len(result) > tc.max {
+			t.Errorf("truncatePath(%q, %d) = %q (len %d), exceeds max", tc.path, tc.max, result, len(result))
+		}
 	}
 }

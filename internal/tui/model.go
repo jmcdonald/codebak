@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -47,6 +49,7 @@ type VersionItem struct {
 type Model struct {
 	config   *config.Config
 	service  ports.TUIService // Injected service for testability
+	version  string           // Application version
 	view     View
 	width    int
 	height   int
@@ -148,13 +151,13 @@ var keys = keyMap{
 }
 
 // NewModel creates a new TUI model with default service.
-func NewModel() (*Model, error) {
-	return NewModelWithService(tuisvc.New())
+func NewModel(version string) (*Model, error) {
+	return NewModelWithService(version, tuisvc.New())
 }
 
 // NewModelWithService creates a new TUI model with a custom service.
 // This allows dependency injection for testing.
-func NewModelWithService(svc ports.TUIService) (*Model, error) {
+func NewModelWithService(version string, svc ports.TUIService) (*Model, error) {
 	cfg, err := svc.LoadConfig()
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
@@ -163,6 +166,7 @@ func NewModelWithService(svc ports.TUIService) (*Model, error) {
 	m := &Model{
 		config:  cfg,
 		service: svc,
+		version: version,
 		view:    ProjectsView,
 	}
 
@@ -179,6 +183,7 @@ func NewModelWithConfig(cfg *config.Config, svc ports.TUIService) *Model {
 	return &Model{
 		config:  cfg,
 		service: svc,
+		version: "test",
 		view:    ProjectsView,
 	}
 }
@@ -421,14 +426,30 @@ func (m *Model) moveCursor(delta int) {
 func (m *Model) handleSettingsSelect() {
 	switch m.settingsCursor {
 	case 0: // Backup Directory
-		m.statusMsg = fmt.Sprintf("Backup directory: %s", m.config.BackupDir)
+		size := m.getBackupDirSize()
+		m.statusMsg = fmt.Sprintf("📁 %s (%s used)", m.config.BackupDir, size)
 	case 1: // Color Theme
-		m.statusMsg = "Theme selection coming soon"
+		m.statusMsg = "🎨 Theme: purple (default) — more themes coming in future release"
 	case 2: // Migrate Backups
-		m.statusMsg = "Use 'codebak move <path>' from CLI to migrate backups"
+		m.statusMsg = "💡 To move backups: codebak move /new/path"
 	case 3: // About
-		m.statusMsg = "codebak - Incremental Code Backup Tool"
+		m.statusMsg = fmt.Sprintf("codebak v%s — Incremental Code Backup Tool", m.version)
 	}
+}
+
+// getBackupDirSize calculates total size of backup directory
+func (m *Model) getBackupDirSize() string {
+	var totalSize int64
+	_ = filepath.Walk(m.config.BackupDir, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Skip errors, continue walking
+		}
+		if !info.IsDir() {
+			totalSize += info.Size()
+		}
+		return nil
+	})
+	return backup.FormatSize(totalSize)
 }
 
 func (m *Model) runBackup() tea.Cmd {
@@ -1018,16 +1039,17 @@ func (m *Model) renderSettingsView() string {
 	b.WriteString(title)
 	b.WriteString("\n\n")
 
-	// Settings options
+	// Settings options with dynamic values
+	backupDirValue := truncatePath(m.config.BackupDir, 35)
 	settings := []struct {
 		name        string
 		description string
 		value       string
 	}{
-		{"Backup Directory", "Where backups are stored", m.config.BackupDir},
+		{"Backup Directory", "Where backups are stored", backupDirValue},
 		{"Color Theme", "UI color scheme", "purple (default)"},
-		{"Migrate Backups", "Move backups to new location", "→"},
-		{"About", "Version and info", "→"},
+		{"Migrate Backups", "Move backups to new location", "codebak move <path>"},
+		{"About", "Version and info", fmt.Sprintf("v%s", m.version)},
 	}
 
 	for i, s := range settings {
@@ -1045,6 +1067,17 @@ func (m *Model) renderSettingsView() string {
 		b.WriteString("\n\n")
 	}
 
+	// Status message area
+	b.WriteString("\n")
+	if m.statusMsg != "" {
+		if m.statusErr {
+			b.WriteString(errorBadge.Render(m.statusMsg))
+		} else {
+			b.WriteString(successBadge.Render(m.statusMsg))
+		}
+	}
+	b.WriteString("\n")
+
 	// Help
 	help := "[↑/↓] navigate  [enter] select  [esc] back"
 	b.WriteString(helpStyle.Render(help))
@@ -1052,9 +1085,22 @@ func (m *Model) renderSettingsView() string {
 	return b.String()
 }
 
+// truncatePath shortens a path for display by replacing middle with ...
+func truncatePath(path string, max int) string {
+	if len(path) <= max {
+		return path
+	}
+	// Keep first ~10 and last portion
+	if max > 15 {
+		keep := (max - 3) / 2
+		return path[:keep] + "..." + path[len(path)-keep:]
+	}
+	return path[:max-3] + "..."
+}
+
 // Run starts the TUI
-func Run() error {
-	m, err := NewModel()
+func Run(version string) error {
+	m, err := NewModel(version)
 	if err != nil {
 		return err
 	}
