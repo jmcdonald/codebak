@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jmcdonald/codebak/internal/adapters/tuisvc"
 	"github.com/jmcdonald/codebak/internal/backup"
@@ -82,8 +82,8 @@ type Model struct {
 	settingsCursor int
 	prevView       View // View to return to after settings
 
-	// Move input view
-	moveInput textinput.Model
+	// Move input view (folder picker)
+	folderPicker filepicker.Model
 
 	// Status message
 	statusMsg string
@@ -171,11 +171,11 @@ func NewModelWithService(version string, svc ports.TUIService) (*Model, error) {
 	}
 
 	m := &Model{
-		config:    cfg,
-		service:   svc,
-		version:   version,
-		view:      ProjectsView,
-		moveInput: newMoveInput(),
+		config:       cfg,
+		service:      svc,
+		version:      version,
+		view:         ProjectsView,
+		folderPicker: newFolderPicker(),
 	}
 
 	if err := m.loadProjects(); err != nil {
@@ -185,24 +185,29 @@ func NewModelWithService(version string, svc ports.TUIService) (*Model, error) {
 	return m, nil
 }
 
-// newMoveInput creates a new text input for move path entry
-func newMoveInput() textinput.Model {
-	ti := textinput.New()
-	ti.Placeholder = "/path/to/new/backup/dir"
-	ti.CharLimit = 256
-	ti.Width = 50
-	return ti
+// newFolderPicker creates a folder picker for directory selection
+func newFolderPicker() filepicker.Model {
+	fp := filepicker.New()
+	fp.DirAllowed = true
+	fp.FileAllowed = false
+	fp.ShowHidden = false
+	fp.ShowPermissions = false
+	fp.ShowSize = false
+	fp.CurrentDirectory, _ = os.UserHomeDir()
+	fp.Height = 12
+	fp.AutoHeight = false
+	return fp
 }
 
 // NewModelWithConfig creates a new TUI model with a provided config and service.
 // This is useful for testing with pre-configured state.
 func NewModelWithConfig(cfg *config.Config, svc ports.TUIService) *Model {
 	return &Model{
-		config:    cfg,
-		service:   svc,
-		version:   "test",
-		view:      ProjectsView,
-		moveInput: newMoveInput(),
+		config:       cfg,
+		service:      svc,
+		version:      "test",
+		view:         ProjectsView,
+		folderPicker: newFolderPicker(),
 	}
 }
 
@@ -300,9 +305,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// Handle MoveInputView separately (text input mode)
+		// Handle MoveInputView separately (folder picker mode)
 		if m.view == MoveInputView {
-			return m.handleMoveInput(msg)
+			return m.handleFolderPicker(msg)
 		}
 
 		// Clear status on any key
@@ -335,7 +340,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				change := m.diffResult.Changes[m.diffCursor]
 				return m, m.computeFileDiff(change)
 			} else if m.view == SettingsView {
-				m.handleSettingsSelect()
+				if cmd := m.handleSettingsSelect(); cmd != nil {
+					return m, cmd
+				}
 			}
 
 		case key.Matches(msg, keys.Back):
@@ -357,7 +364,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case SettingsView:
 				m.view = m.prevView
 			case MoveInputView:
-				m.moveInput.Blur()
 				m.view = SettingsView
 			}
 
@@ -451,7 +457,7 @@ func (m *Model) moveCursor(delta int) {
 }
 
 // handleSettingsSelect handles Enter key press in SettingsView
-func (m *Model) handleSettingsSelect() {
+func (m *Model) handleSettingsSelect() tea.Cmd {
 	switch m.settingsCursor {
 	case 0: // Backup Directory
 		size := m.getBackupDirSize()
@@ -459,12 +465,13 @@ func (m *Model) handleSettingsSelect() {
 	case 1: // Color Theme
 		m.statusMsg = "🎨 Theme: purple (default) — more themes coming in future release"
 	case 2: // Migrate Backups
-		m.moveInput.SetValue("")
-		m.moveInput.Focus()
+		m.folderPicker = newFolderPicker() // Reset picker
 		m.view = MoveInputView
+		return m.folderPicker.Init()
 	case 3: // About
 		m.statusMsg = fmt.Sprintf("codebak v%s — Incremental Code Backup Tool", m.version)
 	}
+	return nil
 }
 
 // getBackupDirSize calculates total size of backup directory
@@ -482,29 +489,26 @@ func (m *Model) getBackupDirSize() string {
 	return backup.FormatSize(totalSize)
 }
 
-// handleMoveInput handles keyboard input in MoveInputView
-func (m *Model) handleMoveInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc:
-		m.moveInput.Blur()
-		m.view = SettingsView
-		return m, nil
-	case tea.KeyEnter:
-		newPath := m.moveInput.Value()
-		if newPath == "" {
-			m.statusMsg = "No path entered"
-			m.statusErr = true
-			m.moveInput.Blur()
+// handleFolderPicker handles messages in MoveInputView (folder picker)
+func (m *Model) handleFolderPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Check for quit/back first
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if keyMsg.String() == "q" || keyMsg.String() == "ctrl+c" {
 			m.view = SettingsView
 			return m, nil
 		}
-		// Execute move in background
-		return m, m.executeMoveBackups(newPath)
 	}
 
-	// Pass to textinput
+	// Update folder picker
 	var cmd tea.Cmd
-	m.moveInput, cmd = m.moveInput.Update(msg)
+	m.folderPicker, cmd = m.folderPicker.Update(msg)
+
+	// Check if user selected a directory
+	if didSelect, path := m.folderPicker.DidSelectFile(msg); didSelect {
+		m.view = SettingsView
+		return m, m.executeMoveBackups(path)
+	}
+
 	return m, cmd
 }
 
@@ -1222,28 +1226,19 @@ func (m *Model) renderSettingsView() string {
 func (m *Model) renderMoveInputView() string {
 	var b strings.Builder
 
-	// Title
-	title := titleStyle.Render(" 📁 Migrate Backups ")
+	// Title with current path
+	title := titleStyle.Render(" 📁 Select New Backup Location ")
 	b.WriteString(title)
+	b.WriteString("\n")
+
+	// Current info
+	b.WriteString(dimStyle.Render(fmt.Sprintf("  Current: %s", truncatePath(m.config.BackupDir, 50))))
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render(fmt.Sprintf("  Browsing: %s", m.folderPicker.CurrentDirectory)))
 	b.WriteString("\n\n")
 
-	// Current backup directory
-	b.WriteString(dimStyle.Render("  Current location:"))
-	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("    %s", m.config.BackupDir))
-	b.WriteString("\n\n")
-
-	// Input prompt
-	b.WriteString(dimStyle.Render("  Enter new backup directory:"))
-	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("    %s", m.moveInput.View()))
-	b.WriteString("\n\n")
-
-	// Info
-	b.WriteString(dimStyle.Render("  This will move all existing backups to the new location"))
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("  and update your configuration."))
-	b.WriteString("\n\n")
+	// Folder picker
+	b.WriteString(m.folderPicker.View())
 
 	// Status message area
 	if m.statusMsg != "" {
@@ -1256,7 +1251,7 @@ func (m *Model) renderMoveInputView() string {
 	}
 
 	// Help
-	help := "[enter] confirm  [esc] cancel"
+	help := "[↑/↓] navigate  [enter] select folder  [esc/h] back  [q] cancel"
 	b.WriteString(helpStyle.Render(help))
 
 	return b.String()
