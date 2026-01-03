@@ -1,10 +1,10 @@
 #!/bin/bash
 # codebak installer
-# Usage: curl -sSL https://raw.githubusercontent.com/mcdonaldj/codebak/main/install.sh | bash
+# Usage: curl -sSL https://raw.githubusercontent.com/jmcdonald/codebak/main/install.sh | bash
 
 set -e
 
-REPO="mcdonaldj/codebak"
+REPO="jmcdonald/codebak"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/bin}"
 BINARY="codebak"
 
