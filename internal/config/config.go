@@ -29,7 +29,7 @@ func DefaultConfig() (*Config, error) {
 	}
 	return &Config{
 		SourceDir: filepath.Join(home, "code"),
-		BackupDir: filepath.Join(home, "backups"),
+		BackupDir: filepath.Join(home, ".backups"),
 		Schedule:  "daily",
 		Time:      "03:00",
 		Exclude: []string{

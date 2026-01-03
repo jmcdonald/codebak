@@ -103,7 +103,7 @@ Config file location: `~/.codebak/config.yaml`
 
 ```yaml
 source_dir: ~/code           # Directory containing your projects
-backup_dir: ~/backups        # Where backups are stored
+backup_dir: ~/.backups       # Where backups are stored (hidden folder)
 schedule: daily
 time: "03:00"
 
@@ -132,7 +132,9 @@ retention:
 | `codebak verify <project>` | Verify backup integrity |
 | `codebak recover <project>` | Restore from backup |
 | `codebak install` | Enable daily scheduled backups |
+| `codebak uninstall` | Disable scheduled backups |
 | `codebak status` | Show config and schedule status |
+| `codebak move <path>` | Move all backups to new location |
 
 ### TUI Keybindings
 
@@ -167,7 +169,7 @@ codebak recover myproject --version=20241215-100000
 ## How It Works
 
 ```text
-~/code/                          ~/backups/
+~/code/                          ~/.backups/
 ├── project-a/                   ├── project-a/
 │   └── (your code)      ──►     │   ├── manifest.json
 ├── project-b/                   │   ├── 20241215-030000.zip

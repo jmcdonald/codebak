@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/fatih/color"
@@ -199,6 +200,8 @@ func (c *CLI) Run() {
 		c.RunRecover()
 	case "list":
 		c.ListBackups()
+	case "move":
+		c.MoveBackups()
 	case "version", "-v", "--version":
 		fmt.Fprintf(c.Out, "codebak v%s\n", c.Version)
 	case "help", "-h", "--help":
@@ -225,6 +228,7 @@ Usage:
   codebak install                          Install daily launchd schedule (3am)
   codebak uninstall                        Remove launchd schedule
   codebak status                           Show launchd status
+  codebak move <path>                      Move all backups to new location
   codebak init                             Create default config file
   codebak version, -v                      Show version
   codebak help, -h                         Show this help
@@ -532,5 +536,122 @@ func (c *CLI) ListBackups() {
 			backup.FormatSize(b.SizeBytes),
 			b.FileCount,
 			gitHead)
+	}
+}
+
+// MoveBackups moves all backups to a new location and updates the config.
+func (c *CLI) MoveBackups() {
+	if len(c.Args) < 3 {
+		fmt.Fprintln(c.Out, "Usage: codebak move <new-path>")
+		fmt.Fprintln(c.Out, "Example: codebak move /Volumes/External/backups")
+		c.Exit(1)
+		return
+	}
+
+	cfgSvc := c.configSvc()
+
+	cfg, err := cfgSvc.Load()
+	if err != nil {
+		fmt.Fprintf(c.Err, "Error loading config: %v\n", err)
+		c.Exit(1)
+		return
+	}
+
+	newPath := c.Args[2]
+
+	// Expand ~ if present
+	if len(newPath) > 0 && newPath[0] == '~' {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintf(c.Err, "Error: cannot expand home directory: %v\n", err)
+			c.Exit(1)
+			return
+		}
+		newPath = filepath.Join(home, newPath[1:])
+	}
+
+	// Make absolute
+	newPath, err = filepath.Abs(newPath)
+	if err != nil {
+		fmt.Fprintf(c.Err, "Error: invalid path: %v\n", err)
+		c.Exit(1)
+		return
+	}
+
+	oldPath := cfg.BackupDir
+	if oldPath == newPath {
+		fmt.Fprintln(c.Out, "New path is the same as current path. Nothing to do.")
+		return
+	}
+
+	// Check if old path exists
+	if _, err := os.Stat(oldPath); os.IsNotExist(err) {
+		fmt.Fprintf(c.Out, "No backups to move (source doesn't exist: %s)\n", oldPath)
+		fmt.Fprintf(c.Out, "Updating config to use: %s\n", newPath)
+		cfg.BackupDir = newPath
+		if err := cfgSvc.Save(cfg); err != nil {
+			fmt.Fprintf(c.Err, "Error saving config: %v\n", err)
+			c.Exit(1)
+			return
+		}
+		fmt.Fprintf(c.Out, "%s Config updated\n", c.green("*"))
+		return
+	}
+
+	// Create new directory if it doesn't exist
+	if err := os.MkdirAll(newPath, 0755); err != nil {
+		fmt.Fprintf(c.Err, "Error creating destination: %v\n", err)
+		c.Exit(1)
+		return
+	}
+
+	fmt.Fprintf(c.Out, "Moving backups:\n")
+	fmt.Fprintf(c.Out, "  From: %s\n", oldPath)
+	fmt.Fprintf(c.Out, "  To:   %s\n", newPath)
+	fmt.Fprintln(c.Out)
+
+	// Read all entries in old path
+	entries, err := os.ReadDir(oldPath)
+	if err != nil {
+		fmt.Fprintf(c.Err, "Error reading source: %v\n", err)
+		c.Exit(1)
+		return
+	}
+
+	moved := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue // Skip non-directories (we only move project folders)
+		}
+
+		oldProjectPath := filepath.Join(oldPath, entry.Name())
+		newProjectPath := filepath.Join(newPath, entry.Name())
+
+		fmt.Fprintf(c.Out, "  Moving %s...", entry.Name())
+
+		if err := os.Rename(oldProjectPath, newProjectPath); err != nil {
+			fmt.Fprintf(c.Out, " %s\n", c.red("FAILED"))
+			fmt.Fprintf(c.Err, "    Error: %v\n", err)
+			continue
+		}
+
+		fmt.Fprintf(c.Out, " %s\n", c.green("OK"))
+		moved++
+	}
+
+	// Update config
+	cfg.BackupDir = newPath
+	if err := cfgSvc.Save(cfg); err != nil {
+		fmt.Fprintf(c.Err, "Error saving config: %v\n", err)
+		c.Exit(1)
+		return
+	}
+
+	fmt.Fprintln(c.Out)
+	fmt.Fprintf(c.Out, "%s Moved %d projects, config updated\n", c.green("*"), moved)
+
+	// Try to remove old directory if empty
+	if err := os.Remove(oldPath); err == nil {
+		fmt.Fprintf(c.Out, "%s Removed empty source directory\n", c.gray("-"))
 	}
 }
