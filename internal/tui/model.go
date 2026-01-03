@@ -196,6 +196,8 @@ func newFolderPicker() filepicker.Model {
 	fp.CurrentDirectory, _ = os.UserHomeDir()
 	fp.Height = 12
 	fp.AutoHeight = false
+	// Customize empty directory message (this is a valid destination!)
+	fp.Styles.EmptyDirectory = fp.Styles.EmptyDirectory.SetString("  (empty folder - press 's' to select)")
 	return fp
 }
 
@@ -262,6 +264,11 @@ func (m *Model) Init() tea.Cmd {
 
 // Update handles messages
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle folder picker view for ALL message types (it needs readDirMsg etc)
+	if m.view == MoveInputView {
+		return m.handleFolderPicker(msg)
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -305,11 +312,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// Handle MoveInputView separately (folder picker mode)
-		if m.view == MoveInputView {
-			return m.handleFolderPicker(msg)
-		}
-
 		// Clear status on any key
 		m.statusMsg = ""
 		m.statusErr = false
@@ -491,11 +493,15 @@ func (m *Model) getBackupDirSize() string {
 
 // handleFolderPicker handles messages in MoveInputView (folder picker)
 func (m *Model) handleFolderPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Check for quit/back first
+	// Check for special keys first
 	if keyMsg, ok := msg.(tea.KeyMsg); ok {
-		if keyMsg.String() == "q" || keyMsg.String() == "ctrl+c" {
+		switch keyMsg.String() {
+		case "q", "ctrl+c":
 			m.view = SettingsView
 			return m, nil
+		case "s", " ": // Select current directory
+			m.view = SettingsView
+			return m, m.executeMoveBackups(m.folderPicker.CurrentDirectory)
 		}
 	}
 
@@ -503,7 +509,7 @@ func (m *Model) handleFolderPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.folderPicker, cmd = m.folderPicker.Update(msg)
 
-	// Check if user selected a directory
+	// Check if user selected a directory (by pressing enter on it)
 	if didSelect, path := m.folderPicker.DidSelectFile(msg); didSelect {
 		m.view = SettingsView
 		return m, m.executeMoveBackups(path)
@@ -1251,7 +1257,7 @@ func (m *Model) renderMoveInputView() string {
 	}
 
 	// Help
-	help := "[↑/↓] navigate  [enter] select folder  [esc/h] back  [q] cancel"
+	help := "[↑/↓] navigate  [enter] open  [s/space] use this folder  [esc] back  [q] cancel"
 	b.WriteString(helpStyle.Render(help))
 
 	return b.String()
