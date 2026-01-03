@@ -201,7 +201,7 @@ func newFolderPicker() filepicker.Model {
 	fp.ShowPermissions = false
 	fp.ShowSize = false
 	fp.CurrentDirectory, _ = os.UserHomeDir()
-	fp.Height = 12
+	fp.SetHeight(12)
 	fp.AutoHeight = false
 	// Customize empty directory message (this is a valid destination!)
 	fp.Styles.EmptyDirectory = fp.Styles.EmptyDirectory.SetString("  (empty folder - press 's' to select)")

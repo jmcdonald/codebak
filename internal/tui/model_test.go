@@ -2150,6 +2150,66 @@ func TestSettingsSelectEnter(t *testing.T) {
 	}
 }
 
+// TestSettingsNavigationAfterBackupDirSelect verifies that navigation continues
+// to work after selecting "Backup Directory" in settings (regression test for freeze bug)
+func TestSettingsNavigationAfterBackupDirSelect(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
+	m.view = SettingsView
+	m.settingsCursor = 0 // Backup Directory
+
+	// Step 1: Press Enter on Backup Directory
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+
+	// Verify statusMsg is set
+	if !contains(m.statusMsg, "/test/backups") {
+		t.Fatalf("statusMsg should show backup path, got %q", m.statusMsg)
+	}
+
+	// Step 2: Verify navigation still works - press 'j' to move down
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(*Model)
+
+	if m.settingsCursor != 1 {
+		t.Errorf("after 'j', settingsCursor = %d, expected 1", m.settingsCursor)
+	}
+	if m.view != SettingsView {
+		t.Errorf("view should still be SettingsView, got %v", m.view)
+	}
+
+	// Step 3: Verify we can continue navigating - press 'j' again
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(*Model)
+
+	if m.settingsCursor != 2 {
+		t.Errorf("after second 'j', settingsCursor = %d, expected 2", m.settingsCursor)
+	}
+
+	// Step 4: Verify we can navigate up - press 'k'
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	m = updated.(*Model)
+
+	if m.settingsCursor != 1 {
+		t.Errorf("after 'k', settingsCursor = %d, expected 1", m.settingsCursor)
+	}
+
+	// Step 5: Verify view renders without panic
+	output := m.View()
+	if output == "" {
+		t.Error("View() returned empty string")
+	}
+
+	// Step 6: Verify Esc still works to go back
+	m.prevView = ProjectsView
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(*Model)
+
+	if m.view != ProjectsView {
+		t.Errorf("after Esc, view = %v, expected ProjectsView", m.view)
+	}
+}
+
 func TestSettingsShowsVersion(t *testing.T) {
 	svc := mocks.NewMockTUIService()
 	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
