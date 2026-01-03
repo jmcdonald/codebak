@@ -230,8 +230,8 @@ Usage:
   codebak status                           Show launchd status
   codebak move <path>                      Move all backups to new location
   codebak init                             Create default config file
-  codebak version, -v                      Show version
-  codebak help, -h                         Show this help
+  codebak --version, -v                    Show version
+  codebak --help, -h                       Show this help
 
 Config: ~/.codebak/config.yaml`)
 }
