@@ -493,6 +493,8 @@ func (m *Model) handleSettingsSelect() tea.Cmd {
 		m.statusMsg = "🎨 Theme: purple (default) — more themes coming in future release"
 	case 2: // Migrate Backups
 		m.folderPicker = newFolderPicker() // Reset picker
+		m.folderPickerHist = nil           // Reset history
+		m.folderPickerTyping = false       // Reset typing mode
 		m.view = MoveInputView
 		return m.folderPicker.Init()
 	case 3: // About
@@ -551,8 +553,7 @@ func (m *Model) handleFolderPicker(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "/", "g": // Enter typing mode
 			m.folderPickerTyping = true
 			m.pathInput.SetValue("")
-			m.pathInput.Focus()
-			return m, nil
+			return m, m.pathInput.Focus() // Focus returns Cmd for cursor blink
 		}
 	}
 

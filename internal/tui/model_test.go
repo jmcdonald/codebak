@@ -2182,3 +2182,415 @@ func TestTruncatePath(t *testing.T) {
 		}
 	}
 }
+
+// ============================================
+// Folder Picker Tests
+// ============================================
+
+func TestEnterMoveInputViewResetsState(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
+	m.view = SettingsView
+	m.settingsCursor = 2 // Migrate Backups
+
+	// Set some prior state that should be reset
+	m.folderPickerHist = []string{"/some/path", "/another/path"}
+	m.folderPickerTyping = true
+
+	// Press Enter on Migrate Backups
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+
+	if m.view != MoveInputView {
+		t.Errorf("view = %v, expected MoveInputView", m.view)
+	}
+	if len(m.folderPickerHist) != 0 {
+		t.Errorf("folderPickerHist should be reset, got %v", m.folderPickerHist)
+	}
+	if m.folderPickerTyping {
+		t.Error("folderPickerTyping should be reset to false")
+	}
+	if cmd == nil {
+		t.Error("cmd should not be nil (folder picker Init)")
+	}
+}
+
+func TestFolderPickerSelectCurrentDirectory(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
+	m.view = MoveInputView
+	m.folderPicker.CurrentDirectory = "/selected/path"
+
+	// Press 's' to select current directory
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(*Model)
+
+	if m.view != MoveConfirmView {
+		t.Errorf("view = %v, expected MoveConfirmView", m.view)
+	}
+	if m.pendingMovePath != "/selected/path" {
+		t.Errorf("pendingMovePath = %q, expected '/selected/path'", m.pendingMovePath)
+	}
+}
+
+func TestFolderPickerSelectWithSpace(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
+	m.view = MoveInputView
+	m.folderPicker.CurrentDirectory = "/space/selected"
+
+	// Press space to select current directory
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = updated.(*Model)
+
+	if m.view != MoveConfirmView {
+		t.Errorf("view = %v, expected MoveConfirmView", m.view)
+	}
+	if m.pendingMovePath != "/space/selected" {
+		t.Errorf("pendingMovePath = %q, expected '/space/selected'", m.pendingMovePath)
+	}
+}
+
+func TestFolderPickerJumpToHome(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
+	m.view = MoveInputView
+	m.folderPicker.CurrentDirectory = "/original/path"
+	m.folderPickerHist = nil
+
+	// Press ~ to jump to home
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'~'}})
+	m = updated.(*Model)
+
+	// Should add current dir to history
+	if len(m.folderPickerHist) != 1 {
+		t.Errorf("folderPickerHist length = %d, expected 1", len(m.folderPickerHist))
+	}
+	if m.folderPickerHist[0] != "/original/path" {
+		t.Errorf("folderPickerHist[0] = %q, expected '/original/path'", m.folderPickerHist[0])
+	}
+	// CurrentDirectory should be home (we can't easily test the exact value)
+	if cmd == nil {
+		t.Error("cmd should not be nil (folder picker Init)")
+	}
+}
+
+func TestFolderPickerJumpToBackupDir(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/my/backups"}, svc)
+	m.view = MoveInputView
+	m.folderPicker.CurrentDirectory = "/somewhere/else"
+	m.folderPickerHist = nil
+
+	// Press . to jump to backup dir
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'.'}})
+	m = updated.(*Model)
+
+	if m.folderPicker.CurrentDirectory != "/my/backups" {
+		t.Errorf("CurrentDirectory = %q, expected '/my/backups'", m.folderPicker.CurrentDirectory)
+	}
+	if len(m.folderPickerHist) != 1 || m.folderPickerHist[0] != "/somewhere/else" {
+		t.Error("Previous directory should be added to history")
+	}
+	if cmd == nil {
+		t.Error("cmd should not be nil (folder picker Init)")
+	}
+}
+
+func TestFolderPickerGoBack(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
+	m.view = MoveInputView
+	m.folderPicker.CurrentDirectory = "/current/path"
+	m.folderPickerHist = []string{"/first", "/second"}
+
+	// Press - to go back
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'-'}})
+	m = updated.(*Model)
+
+	if m.folderPicker.CurrentDirectory != "/second" {
+		t.Errorf("CurrentDirectory = %q, expected '/second'", m.folderPicker.CurrentDirectory)
+	}
+	if len(m.folderPickerHist) != 1 || m.folderPickerHist[0] != "/first" {
+		t.Error("History should pop the last entry")
+	}
+	if cmd == nil {
+		t.Error("cmd should not be nil (folder picker Init)")
+	}
+}
+
+func TestFolderPickerGoBackEmptyHistory(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
+	m.view = MoveInputView
+	m.folderPicker.CurrentDirectory = "/current/path"
+	m.folderPickerHist = nil // Empty history
+
+	// Press - with empty history - should do nothing
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'-'}})
+	m = updated.(*Model)
+
+	if m.folderPicker.CurrentDirectory != "/current/path" {
+		t.Errorf("CurrentDirectory should not change, got %q", m.folderPicker.CurrentDirectory)
+	}
+}
+
+func TestFolderPickerEnterTypingMode(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
+	m.view = MoveInputView
+	m.folderPickerTyping = false
+
+	// Press / to enter typing mode
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(*Model)
+
+	if !m.folderPickerTyping {
+		t.Error("folderPickerTyping should be true")
+	}
+	if m.pathInput.Value() != "" {
+		t.Errorf("pathInput should be empty, got %q", m.pathInput.Value())
+	}
+	if cmd == nil {
+		t.Error("cmd should not be nil (Focus returns Cmd for blink)")
+	}
+}
+
+func TestFolderPickerEnterTypingModeWithG(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
+	m.view = MoveInputView
+	m.folderPickerTyping = false
+
+	// Press 'g' to enter typing mode
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	m = updated.(*Model)
+
+	if !m.folderPickerTyping {
+		t.Error("folderPickerTyping should be true after 'g'")
+	}
+	if cmd == nil {
+		t.Error("cmd should not be nil (Focus returns Cmd)")
+	}
+}
+
+func TestFolderPickerQuit(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
+	m.view = MoveInputView
+
+	// Press q to cancel
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m = updated.(*Model)
+
+	if m.view != SettingsView {
+		t.Errorf("view = %v, expected SettingsView", m.view)
+	}
+}
+
+func TestPathInputEscCancels(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
+	m.view = MoveInputView
+	m.folderPickerTyping = true
+	m.pathInput.SetValue("/some/path")
+
+	// Press Esc to cancel typing mode
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(*Model)
+
+	if m.folderPickerTyping {
+		t.Error("folderPickerTyping should be false after Esc")
+	}
+}
+
+func TestPathInputEnterEmptyCancels(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/test/backups"}, svc)
+	m.view = MoveInputView
+	m.folderPickerTyping = true
+	m.pathInput.SetValue("")
+
+	// Press Enter with empty value - should cancel
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+
+	if m.folderPickerTyping {
+		t.Error("folderPickerTyping should be false after Enter with empty value")
+	}
+}
+
+func TestMoveConfirmYes(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/old/path"}, svc)
+	m.view = MoveConfirmView
+	m.pendingMovePath = "/new/path"
+
+	// Press y to confirm
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = updated.(*Model)
+
+	if m.view != SettingsView {
+		t.Errorf("view = %v, expected SettingsView", m.view)
+	}
+	if cmd == nil {
+		t.Error("cmd should not be nil (executeMoveBackups)")
+	}
+}
+
+func TestMoveConfirmNo(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/old/path"}, svc)
+	m.view = MoveConfirmView
+	m.pendingMovePath = "/new/path"
+
+	// Press n to cancel
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = updated.(*Model)
+
+	if m.view != MoveInputView {
+		t.Errorf("view = %v, expected MoveInputView", m.view)
+	}
+}
+
+func TestMoveConfirmEsc(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/old/path"}, svc)
+	m.view = MoveConfirmView
+	m.pendingMovePath = "/new/path"
+
+	// Press esc to cancel
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m = updated.(*Model)
+
+	if m.view != MoveInputView {
+		t.Errorf("view = %v, expected MoveInputView", m.view)
+	}
+}
+
+func TestRenderMoveInputView(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/current/backups"}, svc)
+	m.view = MoveInputView
+	m.width = 80
+	m.height = 24
+
+	output := m.renderMoveInputView()
+
+	if !contains(output, "Select New Backup Location") {
+		t.Error("output should contain title")
+	}
+	if !contains(output, "/current/backups") {
+		t.Error("output should contain current backup dir")
+	}
+	// Check for shortcuts in help
+	if !contains(output, "[~] home") {
+		t.Error("output should contain home shortcut")
+	}
+	if !contains(output, "[.] backups") {
+		t.Error("output should contain backups shortcut")
+	}
+	if !contains(output, "[-] prev") {
+		t.Error("output should contain prev shortcut")
+	}
+	if !contains(output, "[/] type path") {
+		t.Error("output should contain type path shortcut")
+	}
+}
+
+func TestRenderMoveInputViewTypingMode(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/current/backups"}, svc)
+	m.view = MoveInputView
+	m.folderPickerTyping = true
+	m.width = 80
+	m.height = 24
+
+	output := m.renderMoveInputView()
+
+	// Should show different help text in typing mode
+	if !contains(output, "[enter] go") {
+		t.Error("output should contain enter help in typing mode")
+	}
+	if !contains(output, "[esc] cancel") {
+		t.Error("output should contain esc help in typing mode")
+	}
+	if !contains(output, "Press Enter to navigate") {
+		t.Error("output should contain typing mode instructions")
+	}
+}
+
+func TestRenderMoveConfirmView(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/old/backups"}, svc)
+	m.view = MoveConfirmView
+	m.pendingMovePath = "/new/backups"
+	m.projects = []ProjectItem{{Name: "proj1"}, {Name: "proj2"}}
+	m.width = 80
+	m.height = 24
+
+	output := m.renderMoveConfirmView()
+
+	if !contains(output, "Confirm Move") {
+		t.Error("output should contain title")
+	}
+	if !contains(output, "/old/backups") {
+		t.Error("output should contain from path")
+	}
+	if !contains(output, "/new/backups") {
+		t.Error("output should contain to path")
+	}
+	if !contains(output, "Projects: 2") {
+		t.Error("output should contain project count")
+	}
+	if !contains(output, "[y] Confirm") {
+		t.Error("output should contain confirm option")
+	}
+	if !contains(output, "[n] Cancel") {
+		t.Error("output should contain cancel option")
+	}
+}
+
+func TestMoveInputViewInMainView(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/backups"}, svc)
+	m.view = MoveInputView
+	m.width = 80
+	m.height = 24
+
+	output := m.View()
+
+	if !contains(output, "Select New Backup Location") {
+		t.Error("View() should render MoveInputView")
+	}
+}
+
+func TestMoveConfirmViewInMainView(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/backups"}, svc)
+	m.view = MoveConfirmView
+	m.pendingMovePath = "/new/backups"
+	m.width = 80
+	m.height = 24
+
+	output := m.View()
+
+	if !contains(output, "Confirm Move") {
+		t.Error("View() should render MoveConfirmView")
+	}
+}
+
+func TestBackFromMoveInputView(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{BackupDir: "/backups"}, svc)
+	m.view = MoveInputView
+
+	// Press esc from folder picker (when not in typing mode)
+	// Note: esc in folder picker is handled by the 'q' key
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(*Model)
+
+	if m.view != SettingsView {
+		t.Errorf("view = %v, expected SettingsView", m.view)
+	}
+}
