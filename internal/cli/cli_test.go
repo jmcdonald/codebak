@@ -420,8 +420,8 @@ func TestPrintUsage(t *testing.T) {
 		"codebak uninstall",
 		"codebak status",
 		"codebak init",
-		"codebak version",
-		"codebak help",
+		"codebak --version",
+		"codebak --help",
 		"~/.codebak/config.yaml",
 	}
 

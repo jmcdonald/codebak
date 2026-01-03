@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jmcdonald/codebak/internal/adapters/tuisvc"
 	"github.com/jmcdonald/codebak/internal/backup"
@@ -25,6 +26,7 @@ const (
 	DiffResultView // Showing diff results (file list)
 	FileDiffView   // Showing actual file content diff
 	SettingsView   // Settings/configuration view
+	MoveInputView  // Text input for move path
 )
 
 // ProjectItem represents a project in the list
@@ -79,6 +81,9 @@ type Model struct {
 	// Settings view
 	settingsCursor int
 	prevView       View // View to return to after settings
+
+	// Move input view
+	moveInput textinput.Model
 
 	// Status message
 	statusMsg string
@@ -166,10 +171,11 @@ func NewModelWithService(version string, svc ports.TUIService) (*Model, error) {
 	}
 
 	m := &Model{
-		config:  cfg,
-		service: svc,
-		version: version,
-		view:    ProjectsView,
+		config:    cfg,
+		service:   svc,
+		version:   version,
+		view:      ProjectsView,
+		moveInput: newMoveInput(),
 	}
 
 	if err := m.loadProjects(); err != nil {
@@ -179,14 +185,24 @@ func NewModelWithService(version string, svc ports.TUIService) (*Model, error) {
 	return m, nil
 }
 
+// newMoveInput creates a new text input for move path entry
+func newMoveInput() textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = "/path/to/new/backup/dir"
+	ti.CharLimit = 256
+	ti.Width = 50
+	return ti
+}
+
 // NewModelWithConfig creates a new TUI model with a provided config and service.
 // This is useful for testing with pre-configured state.
 func NewModelWithConfig(cfg *config.Config, svc ports.TUIService) *Model {
 	return &Model{
-		config:  cfg,
-		service: svc,
-		version: "test",
-		view:    ProjectsView,
+		config:    cfg,
+		service:   svc,
+		version:   "test",
+		view:      ProjectsView,
+		moveInput: newMoveInput(),
 	}
 }
 
@@ -284,6 +300,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Handle MoveInputView separately (text input mode)
+		if m.view == MoveInputView {
+			return m.handleMoveInput(msg)
+		}
+
 		// Clear status on any key
 		m.statusMsg = ""
 		m.statusErr = false
@@ -335,6 +356,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.fileDiffScroll = 0
 			case SettingsView:
 				m.view = m.prevView
+			case MoveInputView:
+				m.moveInput.Blur()
+				m.view = SettingsView
 			}
 
 		case key.Matches(msg, keys.Run):
@@ -435,7 +459,9 @@ func (m *Model) handleSettingsSelect() {
 	case 1: // Color Theme
 		m.statusMsg = "🎨 Theme: purple (default) — more themes coming in future release"
 	case 2: // Migrate Backups
-		m.statusMsg = "💡 To move backups: codebak move /new/path"
+		m.moveInput.SetValue("")
+		m.moveInput.Focus()
+		m.view = MoveInputView
 	case 3: // About
 		m.statusMsg = fmt.Sprintf("codebak v%s — Incremental Code Backup Tool", m.version)
 	}
@@ -454,6 +480,102 @@ func (m *Model) getBackupDirSize() string {
 		return nil
 	})
 	return backup.FormatSize(totalSize)
+}
+
+// handleMoveInput handles keyboard input in MoveInputView
+func (m *Model) handleMoveInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.moveInput.Blur()
+		m.view = SettingsView
+		return m, nil
+	case tea.KeyEnter:
+		newPath := m.moveInput.Value()
+		if newPath == "" {
+			m.statusMsg = "No path entered"
+			m.statusErr = true
+			m.moveInput.Blur()
+			m.view = SettingsView
+			return m, nil
+		}
+		// Execute move in background
+		return m, m.executeMoveBackups(newPath)
+	}
+
+	// Pass to textinput
+	var cmd tea.Cmd
+	m.moveInput, cmd = m.moveInput.Update(msg)
+	return m, cmd
+}
+
+// executeMoveBackups moves backups to new location
+func (m *Model) executeMoveBackups(newPath string) tea.Cmd {
+	return func() tea.Msg {
+		// Expand ~ if present
+		if len(newPath) > 0 && newPath[0] == '~' {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return statusMsg{err: true, msg: fmt.Sprintf("Cannot expand ~: %v", err)}
+			}
+			newPath = filepath.Join(home, newPath[1:])
+		}
+
+		// Make absolute
+		absPath, err := filepath.Abs(newPath)
+		if err != nil {
+			return statusMsg{err: true, msg: fmt.Sprintf("Invalid path: %v", err)}
+		}
+
+		oldPath := m.config.BackupDir
+		if oldPath == absPath {
+			return statusMsg{msg: "Same path - nothing to move"}
+		}
+
+		// Check if old path exists
+		if _, err := os.Stat(oldPath); os.IsNotExist(err) {
+			// No backups to move, just update config
+			m.config.BackupDir = absPath
+			if err := m.config.Save(); err != nil {
+				return statusMsg{err: true, msg: fmt.Sprintf("Error saving config: %v", err)}
+			}
+			return statusMsg{msg: fmt.Sprintf("✓ Backup dir set to %s", absPath)}
+		}
+
+		// Create new directory
+		if err := os.MkdirAll(absPath, 0755); err != nil {
+			return statusMsg{err: true, msg: fmt.Sprintf("Cannot create dir: %v", err)}
+		}
+
+		// Move all project directories
+		entries, err := os.ReadDir(oldPath)
+		if err != nil {
+			return statusMsg{err: true, msg: fmt.Sprintf("Cannot read source: %v", err)}
+		}
+
+		moved := 0
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			oldProjectPath := filepath.Join(oldPath, entry.Name())
+			newProjectPath := filepath.Join(absPath, entry.Name())
+			if err := os.Rename(oldProjectPath, newProjectPath); err != nil {
+				return statusMsg{err: true, msg: fmt.Sprintf("Failed moving %s: %v", entry.Name(), err)}
+			}
+			moved++
+		}
+
+		// Update config
+		m.config.BackupDir = absPath
+		if err := m.config.Save(); err != nil {
+			return statusMsg{err: true, msg: fmt.Sprintf("Error saving config: %v", err)}
+		}
+
+		// Try to remove old empty directory
+		_ = os.Remove(oldPath)
+
+		return statusMsg{msg: fmt.Sprintf("✓ Moved %d projects to %s", moved, absPath)}
+	}
 }
 
 func (m *Model) runBackup() tea.Cmd {
@@ -570,6 +692,8 @@ func (m *Model) View() string {
 		content = m.renderFileDiffView()
 	case SettingsView:
 		content = m.renderSettingsView()
+	case MoveInputView:
+		content = m.renderMoveInputView()
 	}
 
 	return appStyle.Render(content)
@@ -1090,6 +1214,49 @@ func (m *Model) renderSettingsView() string {
 
 	// Help
 	help := "[↑/↓] navigate  [enter] select  [esc] back"
+	b.WriteString(helpStyle.Render(help))
+
+	return b.String()
+}
+
+func (m *Model) renderMoveInputView() string {
+	var b strings.Builder
+
+	// Title
+	title := titleStyle.Render(" 📁 Migrate Backups ")
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	// Current backup directory
+	b.WriteString(dimStyle.Render("  Current location:"))
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("    %s", m.config.BackupDir))
+	b.WriteString("\n\n")
+
+	// Input prompt
+	b.WriteString(dimStyle.Render("  Enter new backup directory:"))
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("    %s", m.moveInput.View()))
+	b.WriteString("\n\n")
+
+	// Info
+	b.WriteString(dimStyle.Render("  This will move all existing backups to the new location"))
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("  and update your configuration."))
+	b.WriteString("\n\n")
+
+	// Status message area
+	if m.statusMsg != "" {
+		if m.statusErr {
+			b.WriteString(errorBadge.Render(m.statusMsg))
+		} else {
+			b.WriteString(successBadge.Render(m.statusMsg))
+		}
+		b.WriteString("\n")
+	}
+
+	// Help
+	help := "[enter] confirm  [esc] cancel"
 	b.WriteString(helpStyle.Render(help))
 
 	return b.String()
