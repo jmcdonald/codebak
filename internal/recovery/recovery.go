@@ -90,15 +90,37 @@ func (s *Service) Verify(cfg *config.Config, project, version string) error {
 
 // Recover restores a project from backup.
 func (s *Service) Recover(cfg *config.Config, opts RecoverOptions) error {
-	sourceDir, err := config.ExpandPath(cfg.SourceDir)
-	if err != nil {
-		return err
-	}
 	backupDir, err := config.ExpandPath(cfg.BackupDir)
 	if err != nil {
 		return err
 	}
-	projectPath := filepath.Join(sourceDir, opts.Project)
+
+	// Search for project in all sources, or use first source as default
+	var projectPath string
+	sources := cfg.GetSources()
+	for _, source := range sources {
+		sourceDir, err := config.ExpandPath(source.Path)
+		if err != nil {
+			continue
+		}
+		candidatePath := filepath.Join(sourceDir, opts.Project)
+		if _, err := s.fs.Stat(candidatePath); err == nil {
+			projectPath = candidatePath
+			break
+		}
+	}
+	// If project not found in any source, restore to first source (for deleted projects)
+	if projectPath == "" && len(sources) > 0 {
+		sourceDir, err := config.ExpandPath(sources[0].Path)
+		if err != nil {
+			return err
+		}
+		projectPath = filepath.Join(sourceDir, opts.Project)
+	}
+	if projectPath == "" {
+		return fmt.Errorf("no source directories configured")
+	}
+	sourceDir := filepath.Dir(projectPath)
 
 	// Load manifest
 	m, err := manifest.Load(backupDir, opts.Project)

@@ -271,7 +271,12 @@ func (c *CLI) RunBackup() {
 		return
 	}
 
-	fmt.Fprintf(c.Out, "%s Scanning %s...\n", c.cyan("=>"), cfg.SourceDir)
+	sources := cfg.GetSources()
+	if len(sources) == 1 {
+		fmt.Fprintf(c.Out, "%s Scanning %s...\n", c.cyan("=>"), sources[0].Path)
+	} else {
+		fmt.Fprintf(c.Out, "%s Scanning %d source directories...\n", c.cyan("=>"), len(sources))
+	}
 
 	var results []backup.BackupResult
 	if len(c.Args) > 2 {
@@ -381,7 +386,15 @@ func (c *CLI) ShowStatus() {
 	}
 
 	fmt.Fprintln(c.Out, "codebak status:")
-	fmt.Fprintf(c.Out, "  Source:  %s\n", cfg.SourceDir)
+	sources := cfg.GetSources()
+	if len(sources) == 1 {
+		fmt.Fprintf(c.Out, "  Source:  %s\n", sources[0].Path)
+	} else {
+		fmt.Fprintf(c.Out, "  Sources: %d directories\n", len(sources))
+		for _, src := range sources {
+			fmt.Fprintf(c.Out, "           - %s\n", src.Path)
+		}
+	}
 	fmt.Fprintf(c.Out, "  Backup:  %s\n", cfg.BackupDir)
 	fmt.Fprintf(c.Out, "  Config:  %s\n", configPath)
 

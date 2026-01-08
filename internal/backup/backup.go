@@ -145,21 +145,29 @@ func shouldExclude(path string, excludePatterns []string) bool {
 func (s *Service) BackupProject(cfg *config.Config, project string) BackupResult {
 	result := BackupResult{Project: project}
 
-	sourceDir, err := config.ExpandPath(cfg.SourceDir)
-	if err != nil {
-		result.Error = err
-		return result
-	}
 	backupDir, err := config.ExpandPath(cfg.BackupDir)
 	if err != nil {
 		result.Error = err
 		return result
 	}
-	projectPath := filepath.Join(sourceDir, project)
 
-	// Check if project exists
-	if _, err := s.fs.Stat(projectPath); err != nil {
-		result.Error = fmt.Errorf("project not found: %s", projectPath)
+	// Search for project in all sources
+	var projectPath string
+	for _, source := range cfg.GetSources() {
+		sourceDir, err := config.ExpandPath(source.Path)
+		if err != nil {
+			continue
+		}
+		candidatePath := filepath.Join(sourceDir, project)
+		if _, err := s.fs.Stat(candidatePath); err == nil {
+			projectPath = candidatePath
+			break
+		}
+	}
+
+	// Check if project was found
+	if projectPath == "" {
+		result.Error = fmt.Errorf("project not found: %s", project)
 		return result
 	}
 

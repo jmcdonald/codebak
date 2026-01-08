@@ -745,8 +745,9 @@ func TestShowStatusSuccess(t *testing.T) {
 	if !strings.Contains(output, "codebak status:") {
 		t.Errorf("expected status header, got %q", output)
 	}
-	if !strings.Contains(output, mockCfg.config.SourceDir) {
-		t.Errorf("expected source dir, got %q", output)
+	sources := mockCfg.config.GetSources()
+	if len(sources) > 0 && !strings.Contains(output, sources[0].Path) {
+		t.Errorf("expected source dir path, got %q", output)
 	}
 	if !strings.Contains(output, mockCfg.config.BackupDir) {
 		t.Errorf("expected backup dir, got %q", output)
@@ -1525,8 +1526,8 @@ func TestDefaultConfigServiceDefaultConfig(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("DefaultConfig should return a non-nil config")
 	}
-	if cfg.SourceDir == "" {
-		t.Error("DefaultConfig should have a SourceDir")
+	if len(cfg.GetSources()) == 0 {
+		t.Error("DefaultConfig should have at least one source")
 	}
 	if cfg.BackupDir == "" {
 		t.Error("DefaultConfig should have a BackupDir")
