@@ -11,11 +11,43 @@ import (
 // ErrNoHomeDir is returned when the home directory cannot be determined
 var ErrNoHomeDir = fmt.Errorf("cannot determine home directory: HOME environment variable not set")
 
+// SourceType defines how a source should be backed up
+type SourceType string
+
+const (
+	// SourceTypeGit backs up using git bundles (default for code directories)
+	SourceTypeGit SourceType = "git"
+	// SourceTypeSensitive backs up using restic for encrypted incremental backups
+	SourceTypeSensitive SourceType = "sensitive"
+)
+
+// DefaultSensitivePaths returns the default paths to back up with restic encryption.
+// These are common dotfiles and config directories containing sensitive data.
+func DefaultSensitivePaths() []string {
+	return []string{
+		"~/.ssh",
+		"~/.aws",
+		"~/.azure",
+		"~/.gitconfig",
+		"~/.zshrc",
+		"~/.zprofile",
+		"~/.bashrc",
+		"~/.bash_profile",
+		"~/.tmux.conf",
+		"~/.config",
+		"~/.haute",
+		"~/.claude",
+		"~/.beads",
+		"~/.jervais",
+	}
+}
+
 // Source represents a directory to scan for projects
 type Source struct {
-	Path  string `yaml:"path"`
-	Label string `yaml:"label,omitempty"` // Display label (defaults to path basename)
-	Icon  string `yaml:"icon,omitempty"`  // Emoji icon for TUI display
+	Path  string     `yaml:"path"`
+	Label string     `yaml:"label,omitempty"` // Display label (defaults to path basename)
+	Icon  string     `yaml:"icon,omitempty"`  // Emoji icon for TUI display
+	Type  SourceType `yaml:"type,omitempty"`  // Backup type: git (default) or sensitive
 }
 
 type Config struct {
@@ -35,15 +67,52 @@ type Config struct {
 
 // GetSources returns all sources, migrating from SourceDir if needed
 func (c *Config) GetSources() []Source {
-	// If new Sources format is used, return it
+	// If new Sources format is used, return it with defaults applied
 	if len(c.Sources) > 0 {
-		return c.Sources
+		return applySourceDefaults(c.Sources)
 	}
 	// Migrate from old SourceDir format
 	if c.SourceDir != "" {
-		return []Source{{Path: c.SourceDir, Label: "Code", Icon: "📁"}}
+		return []Source{{Path: c.SourceDir, Label: "Code", Icon: "📁", Type: SourceTypeGit}}
 	}
 	return nil
+}
+
+// applySourceDefaults ensures all sources have their default values set
+func applySourceDefaults(sources []Source) []Source {
+	result := make([]Source, len(sources))
+	for i, s := range sources {
+		result[i] = s
+		// Default type is git
+		if result[i].Type == "" {
+			result[i].Type = SourceTypeGit
+		}
+		// Default icon based on type
+		if result[i].Icon == "" {
+			if result[i].Type == SourceTypeSensitive {
+				result[i].Icon = "🔒"
+			} else {
+				result[i].Icon = "📁"
+			}
+		}
+	}
+	return result
+}
+
+// GetSourcesByType returns sources filtered by type
+func (c *Config) GetSourcesByType(t SourceType) []Source {
+	var result []Source
+	for _, s := range c.GetSources() {
+		if s.Type == t {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+// IsValidSourceType checks if a source type is valid
+func IsValidSourceType(t SourceType) bool {
+	return t == SourceTypeGit || t == SourceTypeSensitive
 }
 
 func DefaultConfig() (*Config, error) {
@@ -57,7 +126,7 @@ func DefaultConfig() (*Config, error) {
 		Sources: []Source{
 			{Path: codeDir, Label: "Code", Icon: "📁"},
 		},
-		BackupDir: filepath.Join(home, ".backups"),
+		BackupDir: filepath.Join(home, ".codebak", "backups"),
 		Schedule:  "daily",
 		Time:      "03:00",
 		Exclude: []string{

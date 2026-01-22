@@ -494,6 +494,23 @@ func TestDefaultConfigHomeDir(t *testing.T) {
 	}
 }
 
+func TestDefaultBackupDirIsCodebak(t *testing.T) {
+	cfg, err := DefaultConfig()
+	if err != nil {
+		t.Fatalf("DefaultConfig failed: %v", err)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("Cannot get home dir, skipping test")
+	}
+
+	expectedBackupDir := filepath.Join(home, ".codebak", "backups")
+	if cfg.BackupDir != expectedBackupDir {
+		t.Errorf("BackupDir = %q, expected %q", cfg.BackupDir, expectedBackupDir)
+	}
+}
+
 func TestExpandPathTildeOnly(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -611,5 +628,249 @@ func TestSaveNoHome(t *testing.T) {
 	err := cfg.Save()
 	if err == nil {
 		t.Error("Save should fail when HOME is not set")
+	}
+}
+
+// ============================================================================
+// Tests for SourceType and sensitive paths
+// ============================================================================
+
+func TestSourceTypeConstants(t *testing.T) {
+	// Verify type constants exist and have expected values
+	if SourceTypeGit != "git" {
+		t.Errorf("SourceTypeGit = %q, expected %q", SourceTypeGit, "git")
+	}
+	if SourceTypeSensitive != "sensitive" {
+		t.Errorf("SourceTypeSensitive = %q, expected %q", SourceTypeSensitive, "sensitive")
+	}
+}
+
+func TestIsValidSourceType(t *testing.T) {
+	tests := []struct {
+		input    SourceType
+		expected bool
+	}{
+		{SourceTypeGit, true},
+		{SourceTypeSensitive, true},
+		{"invalid", false},
+		{"", false},
+		{"GIT", false}, // case sensitive
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.input), func(t *testing.T) {
+			result := IsValidSourceType(tt.input)
+			if result != tt.expected {
+				t.Errorf("IsValidSourceType(%q) = %v, expected %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestDefaultSensitivePaths(t *testing.T) {
+	paths := DefaultSensitivePaths()
+
+	// Should have at least some paths
+	if len(paths) == 0 {
+		t.Error("DefaultSensitivePaths returned empty slice")
+	}
+
+	// Check for key expected paths
+	expectedPaths := []string{"~/.ssh", "~/.aws", "~/.config"}
+	for _, expected := range expectedPaths {
+		found := false
+		for _, p := range paths {
+			if p == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected path %q not found in DefaultSensitivePaths", expected)
+		}
+	}
+
+	// All paths should start with ~/
+	for _, p := range paths {
+		if !strings.HasPrefix(p, "~/") {
+			t.Errorf("Path %q does not start with ~/", p)
+		}
+	}
+}
+
+func TestGetSourcesAppliesDefaults(t *testing.T) {
+	cfg := &Config{
+		Sources: []Source{
+			{Path: "/code/project1"},                          // No type, no icon
+			{Path: "/code/project2", Type: SourceTypeGit},     // Has type, no icon
+			{Path: "~/.ssh", Type: SourceTypeSensitive},       // Sensitive, no icon
+			{Path: "~/.aws", Type: SourceTypeSensitive, Icon: "🔑"}, // Sensitive with custom icon
+		},
+	}
+
+	sources := cfg.GetSources()
+
+	// First source should default to git with folder icon
+	if sources[0].Type != SourceTypeGit {
+		t.Errorf("sources[0].Type = %q, expected %q", sources[0].Type, SourceTypeGit)
+	}
+	if sources[0].Icon != "📁" {
+		t.Errorf("sources[0].Icon = %q, expected %q", sources[0].Icon, "📁")
+	}
+
+	// Second source should keep git with folder icon
+	if sources[1].Type != SourceTypeGit {
+		t.Errorf("sources[1].Type = %q, expected %q", sources[1].Type, SourceTypeGit)
+	}
+	if sources[1].Icon != "📁" {
+		t.Errorf("sources[1].Icon = %q, expected %q", sources[1].Icon, "📁")
+	}
+
+	// Third source should have lock icon
+	if sources[2].Type != SourceTypeSensitive {
+		t.Errorf("sources[2].Type = %q, expected %q", sources[2].Type, SourceTypeSensitive)
+	}
+	if sources[2].Icon != "🔒" {
+		t.Errorf("sources[2].Icon = %q, expected %q", sources[2].Icon, "🔒")
+	}
+
+	// Fourth source should keep custom icon
+	if sources[3].Icon != "🔑" {
+		t.Errorf("sources[3].Icon = %q, expected %q", sources[3].Icon, "🔑")
+	}
+}
+
+func TestGetSourcesByType(t *testing.T) {
+	cfg := &Config{
+		Sources: []Source{
+			{Path: "/code/project1", Type: SourceTypeGit},
+			{Path: "/code/project2", Type: SourceTypeGit},
+			{Path: "~/.ssh", Type: SourceTypeSensitive},
+			{Path: "~/.aws", Type: SourceTypeSensitive},
+			{Path: "~/.config", Type: SourceTypeSensitive},
+		},
+	}
+
+	gitSources := cfg.GetSourcesByType(SourceTypeGit)
+	if len(gitSources) != 2 {
+		t.Errorf("Expected 2 git sources, got %d", len(gitSources))
+	}
+
+	sensitiveSources := cfg.GetSourcesByType(SourceTypeSensitive)
+	if len(sensitiveSources) != 3 {
+		t.Errorf("Expected 3 sensitive sources, got %d", len(sensitiveSources))
+	}
+
+	// Empty type should return none
+	noSources := cfg.GetSourcesByType("invalid")
+	if len(noSources) != 0 {
+		t.Errorf("Expected 0 invalid sources, got %d", len(noSources))
+	}
+}
+
+func TestGetSourcesBackwardsCompatibility(t *testing.T) {
+	// Old-style config with just SourceDir
+	cfg := &Config{
+		SourceDir: "/old/source/dir",
+	}
+
+	sources := cfg.GetSources()
+
+	if len(sources) != 1 {
+		t.Fatalf("Expected 1 source, got %d", len(sources))
+	}
+
+	if sources[0].Path != "/old/source/dir" {
+		t.Errorf("sources[0].Path = %q, expected %q", sources[0].Path, "/old/source/dir")
+	}
+
+	// Migrated source should be git type
+	if sources[0].Type != SourceTypeGit {
+		t.Errorf("sources[0].Type = %q, expected %q (migration default)", sources[0].Type, SourceTypeGit)
+	}
+}
+
+func TestLoadConfigWithMixedTypes(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	// Create config directory
+	configDir := filepath.Join(tempDir, ".codebak")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("Failed to create config dir: %v", err)
+	}
+
+	// Write config with mixed source types
+	configPath := filepath.Join(configDir, "config.yaml")
+	configContent := `
+sources:
+  - path: ~/code
+    type: git
+    label: Code
+  - path: ~/.ssh
+    type: sensitive
+    label: SSH Keys
+  - path: ~/.aws
+    type: sensitive
+    label: AWS Config
+backup_dir: /backup
+schedule: daily
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	// Load and verify
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if len(cfg.Sources) != 3 {
+		t.Fatalf("Expected 3 sources, got %d", len(cfg.Sources))
+	}
+
+	// Check types were parsed correctly
+	if cfg.Sources[0].Type != SourceTypeGit {
+		t.Errorf("Sources[0].Type = %q, expected %q", cfg.Sources[0].Type, SourceTypeGit)
+	}
+	if cfg.Sources[1].Type != SourceTypeSensitive {
+		t.Errorf("Sources[1].Type = %q, expected %q", cfg.Sources[1].Type, SourceTypeSensitive)
+	}
+	if cfg.Sources[2].Type != SourceTypeSensitive {
+		t.Errorf("Sources[2].Type = %q, expected %q", cfg.Sources[2].Type, SourceTypeSensitive)
+	}
+
+	// Check labels
+	if cfg.Sources[1].Label != "SSH Keys" {
+		t.Errorf("Sources[1].Label = %q, expected %q", cfg.Sources[1].Label, "SSH Keys")
+	}
+}
+
+func TestApplySourceDefaultsDoesNotModifyOriginal(t *testing.T) {
+	cfg := &Config{
+		Sources: []Source{
+			{Path: "/code/project1"}, // No type
+		},
+	}
+
+	// Get sources (which applies defaults)
+	sources := cfg.GetSources()
+
+	// Original should be unchanged
+	if cfg.Sources[0].Type != "" {
+		t.Error("Original source type was modified")
+	}
+
+	// Returned source should have defaults
+	if sources[0].Type != SourceTypeGit {
+		t.Errorf("Returned source should have default type")
 	}
 }
