@@ -23,7 +23,7 @@ Goal: Add encrypted incremental backups for ~/.ssh, ~/.aws, ~/.claude, etc.
 
 ### Phase 2: Integration (Depends on Phase 1)
 
-- [ ] [P2] 67-codebak-e1k: Unified backup flow: git + restic by source type
+- [x] [P2] 67-codebak-e1k: Unified backup flow: git + restic by source type
   - Backup loop branches on source.Type
   - git sources → existing bundle flow
   - sensitive sources → restic backup
