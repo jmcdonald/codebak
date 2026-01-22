@@ -37,7 +37,7 @@ Goal: Add encrypted incremental backups for ~/.ssh, ~/.aws, ~/.claude, etc.
 
 ### Phase 3: Epic Complete
 
-- [ ] [P2] 67-codebak-0vz: Verify restic integration epic complete
+- [x] [P2] 67-codebak-0vz: Verify restic integration epic complete
   - All sub-tasks merged
   - End-to-end test: backup + restore sensitive paths
   - Update README with sensitive paths feature

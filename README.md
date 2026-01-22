@@ -27,6 +27,7 @@
 ## Features
 
 - **Smart Change Detection** — Only backs up when git HEAD changes or files are modified
+- **Sensitive Path Protection** — Encrypted restic backups for ~/.ssh, ~/.aws, and other sensitive config
 - **Interactive TUI** — Navigate projects, versions, and diffs with vim-style keybindings
 - **Version Comparison** — Diff any two backup versions to see added, modified, and deleted files
 - **Line-by-Line Diff** — Drill into files to see exactly what changed with colored diffs
@@ -118,7 +119,57 @@ exclude:                     # Patterns to exclude from backups
 
 retention:
   keep_last: 30              # Keep last N backups per project
+
+# Sensitive paths (encrypted with restic)
+sources:
+  - path: ~/code             # Git sources (default type)
+    label: Code
+  - path: ~/.ssh             # Sensitive sources (encrypted)
+    type: sensitive
+    label: SSH Keys
+  - path: ~/.aws
+    type: sensitive
+    label: AWS Config
 ```
+
+### Sensitive Paths (Encrypted Backups)
+
+codebak can protect sensitive dotfiles and config directories with encrypted backups using [restic](https://restic.net/):
+
+```yaml
+# ~/.codebak/config.yaml
+sources:
+  - path: ~/code
+    type: git                # Default: zip-based backups
+  - path: ~/.ssh
+    type: sensitive          # Restic encrypted backups
+  - path: ~/.aws
+    type: sensitive
+  - path: ~/.config
+    type: sensitive
+
+restic:
+  repo_path: ~/.codebak/restic-repo    # Optional, this is the default
+  password_env_var: CODEBAK_RESTIC_PASSWORD  # Optional, this is the default
+```
+
+**Setup:**
+
+```bash
+# Set the encryption password (required)
+export CODEBAK_RESTIC_PASSWORD="your-secure-password"
+
+# Add to your shell profile for persistence
+echo 'export CODEBAK_RESTIC_PASSWORD="your-secure-password"' >> ~/.zshrc
+```
+
+**Features:**
+- 🔒 AES-256 encryption at rest
+- Incremental backups (only changed blocks)
+- Deduplication across all sensitive sources
+- Automatic repository initialization on first backup
+
+Sensitive sources display with a 🔒 icon in the TUI and show snapshot counts instead of versions.
 
 ## Usage
 
