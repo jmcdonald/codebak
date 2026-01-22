@@ -2654,3 +2654,188 @@ func TestBackFromMoveInputView(t *testing.T) {
 		t.Errorf("view = %v, expected SettingsView", m.view)
 	}
 }
+
+// Tests for sensitive sources and snapshots view
+
+func TestEnterSensitiveSourceNavigatesToSnapshotsView(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	svc.ConfigResult = &config.Config{}
+	svc.Snapshots = []ports.TUISnapshotInfo{
+		{ID: "abc12345", Time: time.Now(), Paths: []string{"~/.ssh", "~/.aws"}},
+		{ID: "def67890", Time: time.Now().Add(-24 * time.Hour), Paths: []string{"~/.ssh", "~/.aws"}},
+	}
+
+	m := NewModelWithConfig(svc.ConfigResult, svc)
+	m.projects = []ProjectItem{
+		{Name: "Sensitive", SourceType: "sensitive"},
+		{Name: "my-code", SourceType: "git"},
+	}
+
+	// Press enter on sensitive source
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+
+	if m.view != SnapshotsView {
+		t.Errorf("view = %v, expected SnapshotsView", m.view)
+	}
+	if len(m.snapshots) != 2 {
+		t.Errorf("snapshots = %d, expected 2", len(m.snapshots))
+	}
+}
+
+func TestEnterGitSourceNavigatesToVersionsView(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	svc.ConfigResult = &config.Config{}
+	svc.Versions = map[string][]ports.TUIVersionInfo{
+		"my-code": {
+			{File: "v1.zip", Size: 1024},
+		},
+	}
+
+	m := NewModelWithConfig(svc.ConfigResult, svc)
+	m.projects = []ProjectItem{
+		{Name: "my-code", SourceType: "git"},
+	}
+
+	// Press enter on git source
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(*Model)
+
+	if m.view != VersionsView {
+		t.Errorf("view = %v, expected VersionsView", m.view)
+	}
+}
+
+func TestBackFromSnapshotsView(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{}, svc)
+	m.projects = []ProjectItem{{Name: "Sensitive"}}
+	m.snapshots = []SnapshotItem{{ID: "abc123"}}
+	m.view = SnapshotsView
+
+	// Press escape to go back
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = updated.(*Model)
+
+	if m.view != ProjectsView {
+		t.Errorf("view = %v, expected ProjectsView", m.view)
+	}
+	if m.snapshots != nil {
+		t.Error("snapshots should be nil after going back")
+	}
+}
+
+func TestSnapshotsViewNavigation(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{}, svc)
+	m.view = SnapshotsView
+	m.snapshots = []SnapshotItem{
+		{ID: "snap1"},
+		{ID: "snap2"},
+		{ID: "snap3"},
+	}
+	m.snapshotCursor = 0
+
+	// Navigate down
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(*Model)
+	if m.snapshotCursor != 1 {
+		t.Errorf("snapshotCursor = %d, expected 1", m.snapshotCursor)
+	}
+
+	// Navigate down again
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(*Model)
+	if m.snapshotCursor != 2 {
+		t.Errorf("snapshotCursor = %d, expected 2", m.snapshotCursor)
+	}
+
+	// Boundary check - can't go past end
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = updated.(*Model)
+	if m.snapshotCursor != 2 {
+		t.Errorf("snapshotCursor = %d, expected 2 (boundary)", m.snapshotCursor)
+	}
+
+	// Navigate up
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = updated.(*Model)
+	if m.snapshotCursor != 1 {
+		t.Errorf("snapshotCursor = %d, expected 1", m.snapshotCursor)
+	}
+}
+
+func TestRenderSnapshotsViewEmpty(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{}, svc)
+	m.view = SnapshotsView
+	m.selectedProject = "Sensitive"
+	m.snapshots = []SnapshotItem{}
+	m.width = 80
+	m.height = 24
+
+	output := m.View()
+
+	if !contains(output, "🔒") {
+		t.Error("View should contain lock icon")
+	}
+	if !contains(output, "No snapshots found") {
+		t.Error("View should indicate no snapshots")
+	}
+}
+
+func TestRenderSnapshotsViewWithData(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{}, svc)
+	m.view = SnapshotsView
+	m.selectedProject = "Sensitive"
+	m.snapshots = []SnapshotItem{
+		{ID: "abcd1234efgh", Time: time.Now(), Paths: []string{"~/.ssh", "~/.aws"}},
+	}
+	m.snapshotCursor = 0
+	m.width = 80
+	m.height = 24
+
+	output := m.View()
+
+	if !contains(output, "🔒") {
+		t.Error("View should contain lock icon")
+	}
+	if !contains(output, "abcd1234") {
+		t.Error("View should contain truncated snapshot ID")
+	}
+	if !contains(output, "2 paths") {
+		t.Error("View should show path count")
+	}
+}
+
+func TestProjectItemSourceType(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	svc.ConfigResult = &config.Config{}
+	svc.Projects = []ports.TUIProjectInfo{
+		{Name: "Sensitive", SourceType: "sensitive", SourceIcon: "🔒"},
+		{Name: "my-code", SourceType: "git", SourceIcon: "📁"},
+	}
+
+	m, err := NewModelWithService("test", svc)
+	if err != nil {
+		t.Fatalf("NewModelWithService failed: %v", err)
+	}
+
+	if len(m.projects) != 2 {
+		t.Fatalf("projects = %d, expected 2", len(m.projects))
+	}
+
+	// Check sensitive source
+	if m.projects[0].SourceType != "sensitive" {
+		t.Errorf("projects[0].SourceType = %q, expected %q", m.projects[0].SourceType, "sensitive")
+	}
+	if m.projects[0].SourceIcon != "🔒" {
+		t.Errorf("projects[0].SourceIcon = %q, expected %q", m.projects[0].SourceIcon, "🔒")
+	}
+
+	// Check git source
+	if m.projects[1].SourceType != "git" {
+		t.Errorf("projects[1].SourceType = %q, expected %q", m.projects[1].SourceType, "git")
+	}
+}

@@ -22,6 +22,11 @@ type MockTUIService struct {
 	// VersionsError is the error to return from ListVersions
 	VersionsError error
 
+	// Snapshots is the list of restic snapshots to return
+	Snapshots []ports.TUISnapshotInfo
+	// SnapshotsError is the error to return from ListSnapshots
+	SnapshotsError error
+
 	// BackupResults maps project names to backup results
 	BackupResults map[string]ports.TUIBackupResult
 
@@ -32,6 +37,7 @@ type MockTUIService struct {
 	LoadConfigCalls     int
 	ListProjectsCalls   int
 	ListVersionsCalls   []string
+	ListSnapshotsCalls  []string
 	RunBackupCalls      []string
 	VerifyBackupCalls   []string
 }
@@ -92,6 +98,15 @@ func (m *MockTUIService) VerifyBackup(cfg *config.Config, project string) error 
 		return err
 	}
 	return nil
+}
+
+// ListSnapshots returns all restic snapshots for sensitive sources.
+func (m *MockTUIService) ListSnapshots(cfg *config.Config, tag string) ([]ports.TUISnapshotInfo, error) {
+	m.ListSnapshotsCalls = append(m.ListSnapshotsCalls, tag)
+	if m.SnapshotsError != nil {
+		return nil, m.SnapshotsError
+	}
+	return m.Snapshots, nil
 }
 
 // Compile-time check that MockTUIService implements ports.TUIService.

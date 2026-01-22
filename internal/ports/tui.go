@@ -11,7 +11,8 @@ type TUIProjectInfo struct {
 	Name        string
 	Path        string
 	SourceLabel string // Label of the source directory (e.g., "Code", "Work")
-	SourceIcon  string // Icon for display (e.g., "📁", "💼")
+	SourceIcon  string // Icon for display (e.g., "📁", "💼", "🔒")
+	SourceType  string // Source type: "git" or "sensitive"
 	Versions    int
 	LastBackup  time.Time
 	TotalSize   int64
@@ -34,6 +35,14 @@ type TUIBackupResult struct {
 	Reason  string
 }
 
+// TUISnapshotInfo contains restic snapshot metadata for display.
+type TUISnapshotInfo struct {
+	ID        string    // Short snapshot ID
+	Time      time.Time // Snapshot creation time
+	Paths     []string  // Backed up paths
+	Tags      []string  // Snapshot tags
+}
+
 // TUIService provides operations needed by the TUI.
 // This abstraction allows the TUI to be tested without real filesystem/backup operations.
 type TUIService interface {
@@ -45,6 +54,10 @@ type TUIService interface {
 
 	// ListVersions returns all backup versions for a project.
 	ListVersions(cfg *config.Config, project string) ([]TUIVersionInfo, error)
+
+	// ListSnapshots returns all restic snapshots for sensitive sources.
+	// Returns snapshots filtered by the given tag (typically "codebak-sensitive").
+	ListSnapshots(cfg *config.Config, tag string) ([]TUISnapshotInfo, error)
 
 	// RunBackup performs a backup of the specified project.
 	RunBackup(cfg *config.Config, project string) TUIBackupResult

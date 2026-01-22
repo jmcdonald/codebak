@@ -23,6 +23,7 @@ type View int
 const (
 	ProjectsView View = iota
 	VersionsView
+	SnapshotsView  // View for restic snapshots (sensitive sources)
 	DiffSelectView // Selecting versions to compare
 	DiffResultView // Showing diff results (file list)
 	FileDiffView   // Showing actual file content diff
@@ -37,9 +38,18 @@ type ProjectItem struct {
 	Path        string
 	SourceLabel string
 	SourceIcon  string
+	SourceType  string // "git" or "sensitive"
 	Versions    int
 	LastBackup  time.Time
 	TotalSize   int64
+}
+
+// SnapshotItem represents a restic snapshot in the list
+type SnapshotItem struct {
+	ID        string
+	Time      time.Time
+	Paths     []string
+	Tags      []string
 }
 
 // VersionItem represents a backup version
@@ -69,6 +79,10 @@ type Model struct {
 	// Versions view
 	versions      []VersionItem
 	versionCursor int
+
+	// Snapshots view (for sensitive sources)
+	snapshots      []SnapshotItem
+	snapshotCursor int
 
 	// Diff view
 	diffSelections []int       // Indices of selected versions for diff
@@ -244,9 +258,30 @@ func (m *Model) loadProjects() error {
 			Path:        p.Path,
 			SourceLabel: p.SourceLabel,
 			SourceIcon:  p.SourceIcon,
+			SourceType:  p.SourceType,
 			Versions:    p.Versions,
 			LastBackup:  p.LastBackup,
 			TotalSize:   p.TotalSize,
+		})
+	}
+
+	return nil
+}
+
+// loadSnapshots loads restic snapshots for sensitive sources
+func (m *Model) loadSnapshots() error {
+	snapshots, err := m.service.ListSnapshots(m.config, "codebak-sensitive")
+	if err != nil {
+		return err
+	}
+
+	m.snapshots = nil
+	for _, s := range snapshots {
+		m.snapshots = append(m.snapshots, SnapshotItem{
+			ID:    s.ID,
+			Time:  s.Time,
+			Paths: s.Paths,
+			Tags:  s.Tags,
 		})
 	}
 
@@ -354,13 +389,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, keys.Enter):
 			if m.view == ProjectsView && len(m.projects) > 0 {
-				m.selectedProject = m.projects[m.projectCursor].Name
-				if err := m.loadVersions(); err != nil {
-					m.statusMsg = fmt.Sprintf("Error: %v", err)
-					m.statusErr = true
+				project := m.projects[m.projectCursor]
+				m.selectedProject = project.Name
+				// Navigate to snapshots view for sensitive sources, versions view otherwise
+				if project.SourceType == "sensitive" {
+					if err := m.loadSnapshots(); err != nil {
+						m.statusMsg = fmt.Sprintf("Error: %v", err)
+						m.statusErr = true
+					} else {
+						m.view = SnapshotsView
+						m.snapshotCursor = 0
+					}
 				} else {
-					m.view = VersionsView
-					m.versionCursor = 0
+					if err := m.loadVersions(); err != nil {
+						m.statusMsg = fmt.Sprintf("Error: %v", err)
+						m.statusErr = true
+					} else {
+						m.view = VersionsView
+						m.versionCursor = 0
+					}
 				}
 			} else if m.view == DiffResultView && m.diffResult != nil && len(m.diffResult.Changes) > 0 {
 				// Drill into file diff
@@ -377,6 +424,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case VersionsView:
 				m.view = ProjectsView
 				m.versions = nil
+			case SnapshotsView:
+				m.view = ProjectsView
+				m.snapshots = nil
 			case DiffSelectView:
 				m.view = VersionsView
 				m.diffSelections = nil
@@ -438,6 +488,14 @@ func (m *Model) moveCursor(delta int) {
 		}
 		if m.projectCursor >= len(m.projects) {
 			m.projectCursor = len(m.projects) - 1
+		}
+	case SnapshotsView:
+		m.snapshotCursor += delta
+		if m.snapshotCursor < 0 {
+			m.snapshotCursor = 0
+		}
+		if m.snapshotCursor >= len(m.snapshots) {
+			m.snapshotCursor = len(m.snapshots) - 1
 		}
 	case VersionsView, DiffSelectView:
 		m.versionCursor += delta
@@ -786,6 +844,8 @@ func (m *Model) View() string {
 		content = m.renderProjectsView()
 	case VersionsView:
 		content = m.renderVersionsView()
+	case SnapshotsView:
+		content = m.renderSnapshotsView()
 	case DiffSelectView:
 		content = m.renderDiffSelectView()
 	case DiffResultView:
@@ -964,6 +1024,91 @@ func (m *Model) renderVersionsView() string {
 
 	// Help
 	help := "[↑/↓] navigate  [d] diff  [esc] back  [r] backup  [v] verify  [q] quit"
+	b.WriteString(renderSplitFooter(help, m.width))
+
+	return b.String()
+}
+
+func (m *Model) renderSnapshotsView() string {
+	var b strings.Builder
+
+	// Title
+	title := titleStyle.Render(fmt.Sprintf(" 🔒 %s ", m.selectedProject))
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	if len(m.snapshots) == 0 {
+		b.WriteString(dimStyle.Render("  No snapshots found"))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  Run 'codebak backup' to create the first encrypted backup"))
+		b.WriteString("\n\n")
+	} else {
+		// Header
+		header := fmt.Sprintf("  %-12s %-20s %s",
+			"SNAPSHOT ID", "CREATED", "PATHS")
+		b.WriteString(dimStyle.Render(header))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(strings.Repeat("─", 70)))
+		b.WriteString("\n")
+
+		// List items
+		visibleHeight := m.height - 10
+		if visibleHeight < 5 {
+			visibleHeight = 5
+		}
+
+		start := 0
+		if m.snapshotCursor >= visibleHeight {
+			start = m.snapshotCursor - visibleHeight + 1
+		}
+
+		for i := start; i < len(m.snapshots) && i < start+visibleHeight; i++ {
+			s := m.snapshots[i]
+			cursor := "  "
+			style := normalStyle
+			if i == m.snapshotCursor {
+				cursor = "▸ "
+				style = selectedStyle
+			}
+
+			// Format snapshot ID (first 8 chars)
+			snapshotID := s.ID
+			if len(snapshotID) > 8 {
+				snapshotID = snapshotID[:8]
+			}
+
+			// Format paths (count)
+			pathsStr := fmt.Sprintf("%d paths", len(s.Paths))
+			if len(s.Paths) == 1 {
+				pathsStr = "1 path"
+			}
+
+			line := fmt.Sprintf("%s%-12s %-20s %s",
+				cursor, snapshotID, relativeTime(s.Time), pathsStr)
+			b.WriteString(style.Render(line))
+			b.WriteString("\n")
+		}
+	}
+
+	// Pad to fixed height
+	visibleHeight := m.height - 10
+	for i := len(m.snapshots); i < visibleHeight; i++ {
+		b.WriteString("\n")
+	}
+
+	// Status
+	b.WriteString("\n")
+	if m.statusMsg != "" {
+		if m.statusErr {
+			b.WriteString(errorBadge.Render(m.statusMsg))
+		} else {
+			b.WriteString(successBadge.Render(m.statusMsg))
+		}
+	}
+	b.WriteString("\n")
+
+	// Help
+	help := "[↑/↓] navigate  [esc] back  [r] backup  [q] quit"
 	b.WriteString(renderSplitFooter(help, m.width))
 
 	return b.String()
