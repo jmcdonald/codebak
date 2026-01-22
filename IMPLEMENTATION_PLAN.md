@@ -29,7 +29,7 @@ Goal: Add encrypted incremental backups for ~/.ssh, ~/.aws, ~/.claude, etc.
   - sensitive sources → restic backup
   - Integration tests for mixed configs
 
-- [ ] [P2] 67-codebak-s6f: TUI: Display sensitive sources with restic snapshots
+- [x] [P2] 67-codebak-s6f: TUI: Display sensitive sources with restic snapshots
   - Show 🔒 icon for sensitive sources
   - VERSION column shows snapshot count
   - New snapshot list view for sensitive sources
