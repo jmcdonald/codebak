@@ -132,6 +132,7 @@ func DefaultResticRepoPath() (string, error) {
 }
 
 // DefaultResticPasswordEnvVar is the default environment variable for the restic password.
+// #nosec G101 -- This is an env var name, not a credential
 const DefaultResticPasswordEnvVar = "CODEBAK_RESTIC_PASSWORD"
 
 // GetResticRepoPath returns the restic repository path with defaults applied.
