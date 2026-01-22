@@ -15,7 +15,7 @@ Goal: Add encrypted incremental backups for ~/.ssh, ~/.aws, ~/.claude, etc.
   - Default sensitive paths list
   - Update config validation and tests
 
-- [ ] [P2] 67-codebak-5kp: Add restic port and adapter
+- [x] [P2] 67-codebak-5kp: Add restic port and adapter
   - Create ResticClient port interface
   - Implement exec-based adapter
   - Methods: Init, Backup, Snapshots, Restore, Forget
