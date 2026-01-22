@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jmcdonald/codebak/internal/adapters/execgit"
+	"github.com/jmcdonald/codebak/internal/adapters/osfs"
 	"github.com/jmcdonald/codebak/internal/adapters/ziparchiver"
 	"github.com/jmcdonald/codebak/internal/config"
 	"github.com/jmcdonald/codebak/internal/manifest"
@@ -521,13 +523,14 @@ func TestHasChangesGitHeadChanged(t *testing.T) {
 	mockFS := mocks.NewMockFileSystem()
 	mockGit := mocks.NewMockGitClient()
 	mockArchiver := mocks.NewMockArchiver()
+	mockRestic := mocks.NewMockResticClient()
 
 	// Setup: Project is a git repo with different HEAD than last backup
 	projectPath := "/test/project"
 	mockGit.Repos[projectPath] = true
 	mockGit.Heads[projectPath] = "newhead1234567890"
 
-	svc := NewService(mockFS, mockGit, mockArchiver)
+	svc := NewService(mockFS, mockGit, mockArchiver, mockRestic)
 
 	lastBackup := &manifest.BackupEntry{
 		GitHead:   "oldhead0987654321",
@@ -548,13 +551,14 @@ func TestHasChangesGitHeadUnchanged(t *testing.T) {
 	mockFS := mocks.NewMockFileSystem()
 	mockGit := mocks.NewMockGitClient()
 	mockArchiver := mocks.NewMockArchiver()
+	mockRestic := mocks.NewMockResticClient()
 
 	projectPath := "/test/project"
 	headCommit := "samehead1234567890"
 	mockGit.Repos[projectPath] = true
 	mockGit.Heads[projectPath] = headCommit
 
-	svc := NewService(mockFS, mockGit, mockArchiver)
+	svc := NewService(mockFS, mockGit, mockArchiver, mockRestic)
 
 	lastBackup := &manifest.BackupEntry{
 		GitHead:   headCommit, // Same as current
@@ -575,6 +579,7 @@ func TestHasChangesNonGitRepoWithNewerFiles(t *testing.T) {
 	mockFS := mocks.NewMockFileSystem()
 	mockGit := mocks.NewMockGitClient()
 	mockArchiver := mocks.NewMockArchiver()
+	mockRestic := mocks.NewMockResticClient()
 
 	projectPath := "/test/project"
 	// Not a git repo
@@ -588,7 +593,7 @@ func TestHasChangesNonGitRepoWithNewerFiles(t *testing.T) {
 		},
 	}
 
-	svc := NewService(mockFS, mockGit, mockArchiver)
+	svc := NewService(mockFS, mockGit, mockArchiver, mockRestic)
 
 	lastBackup := &manifest.BackupEntry{
 		CreatedAt: time.Now().Add(-24 * time.Hour), // Backup was yesterday
@@ -608,6 +613,7 @@ func TestHasChangesNonGitRepoNoChanges(t *testing.T) {
 	mockFS := mocks.NewMockFileSystem()
 	mockGit := mocks.NewMockGitClient()
 	mockArchiver := mocks.NewMockArchiver()
+	mockRestic := mocks.NewMockResticClient()
 
 	projectPath := "/test/project"
 	mockGit.Repos[projectPath] = false
@@ -620,7 +626,7 @@ func TestHasChangesNonGitRepoNoChanges(t *testing.T) {
 		},
 	}
 
-	svc := NewService(mockFS, mockGit, mockArchiver)
+	svc := NewService(mockFS, mockGit, mockArchiver, mockRestic)
 
 	lastBackup := &manifest.BackupEntry{
 		CreatedAt: time.Now().Add(-24 * time.Hour), // Backup was yesterday
@@ -645,6 +651,7 @@ func TestBackupProjectMkdirAllError(t *testing.T) {
 	mockFS := mocks.NewMockFileSystem()
 	mockGit := mocks.NewMockGitClient()
 	mockArchiver := mocks.NewMockArchiver()
+	mockRestic := mocks.NewMockResticClient()
 
 	sourceDir := filepath.Join(tempDir, "source")
 	projectDir := filepath.Join(sourceDir, "test-project")
@@ -663,7 +670,7 @@ func TestBackupProjectMkdirAllError(t *testing.T) {
 	mockFS.Stats[projectDir] = &mockFileInfo{name: "test-project", isDir: true}
 	mockFS.Errors[projectBackupDir] = os.ErrPermission
 
-	svc := NewService(mockFS, mockGit, mockArchiver)
+	svc := NewService(mockFS, mockGit, mockArchiver, mockRestic)
 
 	cfg := &config.Config{
 		SourceDir: sourceDir,
@@ -686,6 +693,7 @@ func TestBackupProjectArchiverCreateError(t *testing.T) {
 	mockFS := mocks.NewMockFileSystem()
 	mockGit := mocks.NewMockGitClient()
 	mockArchiver := mocks.NewMockArchiver()
+	mockRestic := mocks.NewMockResticClient()
 
 	sourceDir := filepath.Join(tempDir, "source")
 	projectDir := filepath.Join(sourceDir, "test-project")
@@ -705,7 +713,7 @@ func TestBackupProjectArchiverCreateError(t *testing.T) {
 	// Mock archiver to fail
 	mockArchiver.Errors["Create"] = os.ErrPermission
 
-	svc := NewService(mockFS, mockGit, mockArchiver)
+	svc := NewService(mockFS, mockGit, mockArchiver, mockRestic)
 
 	cfg := &config.Config{
 		SourceDir: sourceDir,
@@ -722,12 +730,13 @@ func TestRunBackupListProjectsError(t *testing.T) {
 	mockFS := mocks.NewMockFileSystem()
 	mockGit := mocks.NewMockGitClient()
 	mockArchiver := mocks.NewMockArchiver()
+	mockRestic := mocks.NewMockResticClient()
 
 	// Mock ReadDir to fail
 	sourceDir := "/test/source"
 	mockFS.Errors[sourceDir] = os.ErrPermission
 
-	svc := NewService(mockFS, mockGit, mockArchiver)
+	svc := NewService(mockFS, mockGit, mockArchiver, mockRestic)
 
 	cfg := &config.Config{
 		SourceDir: sourceDir,
@@ -760,12 +769,16 @@ func TestNewServiceAndNewDefaultService(t *testing.T) {
 	if svc.archiver == nil {
 		t.Error("NewDefaultService should set archiver")
 	}
+	if svc.restic == nil {
+		t.Error("NewDefaultService should set restic client")
+	}
 
 	// Test NewService with mocks
 	mockFS := mocks.NewMockFileSystem()
 	mockGit := mocks.NewMockGitClient()
 	mockArchiver := mocks.NewMockArchiver()
-	svc2 := NewService(mockFS, mockGit, mockArchiver)
+	mockRestic := mocks.NewMockResticClient()
+	svc2 := NewService(mockFS, mockGit, mockArchiver, mockRestic)
 	if svc2 == nil {
 		t.Fatal("NewService returned nil")
 	}
@@ -832,6 +845,7 @@ func TestHasChangesWalkError(t *testing.T) {
 	mockFS := mocks.NewMockFileSystem()
 	mockGit := mocks.NewMockGitClient()
 	mockArchiver := mocks.NewMockArchiver()
+	mockRestic := mocks.NewMockResticClient()
 
 	projectPath := "/test/project"
 	// Not a git repo so it falls back to mtime check
@@ -846,7 +860,7 @@ func TestHasChangesWalkError(t *testing.T) {
 		},
 	}
 
-	svc := NewService(mockFS, mockGit, mockArchiver)
+	svc := NewService(mockFS, mockGit, mockArchiver, mockRestic)
 
 	lastBackup := &manifest.BackupEntry{
 		CreatedAt: time.Now().Add(-24 * time.Hour),
@@ -895,5 +909,342 @@ func TestBackupProjectWithRetention(t *testing.T) {
 
 	if result.Skipped {
 		t.Error("First backup should not be skipped")
+	}
+}
+
+// ============================================================================
+// Tests for sensitive source backup and mixed configs
+// ============================================================================
+
+func TestBackupSensitiveSourceSuccess(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	mockFS := mocks.NewMockFileSystem()
+	mockGit := mocks.NewMockGitClient()
+	mockArchiver := mocks.NewMockArchiver()
+	mockRestic := mocks.NewMockResticClient()
+
+	// Create sensitive source directory
+	sshDir := filepath.Join(tempDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0755); err != nil {
+		t.Fatalf("Failed to create ssh dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sshDir, "id_rsa"), []byte("private key"), 0600); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	repoPath := filepath.Join(tempDir, "restic-repo")
+	backupDir := filepath.Join(tempDir, "backups")
+
+	// Setup mock to track stat calls
+	mockFS.Stats[sshDir] = &mockFileInfo{name: ".ssh", isDir: true}
+
+	svc := NewService(mockFS, mockGit, mockArchiver, mockRestic)
+
+	// Set password env var
+	os.Setenv("CODEBAK_RESTIC_PASSWORD", "test-password")
+	defer os.Unsetenv("CODEBAK_RESTIC_PASSWORD")
+
+	source := config.Source{
+		Path:  sshDir,
+		Label: "SSH Keys",
+		Type:  config.SourceTypeSensitive,
+	}
+
+	cfg := &config.Config{
+		BackupDir: backupDir,
+		Restic: config.ResticConfig{
+			RepoPath: repoPath,
+		},
+	}
+
+	result := svc.BackupSensitiveSource(cfg, source)
+	if result.Error != nil {
+		t.Fatalf("BackupSensitiveSource failed: %v", result.Error)
+	}
+
+	if result.Project != "SSH Keys" {
+		t.Errorf("result.Project = %q, expected %q", result.Project, "SSH Keys")
+	}
+
+	if result.SnapshotID == "" {
+		t.Error("SnapshotID should not be empty")
+	}
+
+	if result.SourceType != config.SourceTypeSensitive {
+		t.Errorf("result.SourceType = %q, expected %q", result.SourceType, config.SourceTypeSensitive)
+	}
+
+	// Verify restic was initialized
+	if !mockRestic.InitializedRepos[repoPath] {
+		t.Error("Restic repo should be initialized")
+	}
+}
+
+func TestBackupSensitiveSourceNonExistentPath(t *testing.T) {
+	mockFS := mocks.NewMockFileSystem()
+	mockGit := mocks.NewMockGitClient()
+	mockArchiver := mocks.NewMockArchiver()
+	mockRestic := mocks.NewMockResticClient()
+
+	// Mock Stat to return not found
+	mockFS.Errors["/nonexistent/.ssh"] = os.ErrNotExist
+
+	svc := NewService(mockFS, mockGit, mockArchiver, mockRestic)
+
+	// Set password env var
+	os.Setenv("CODEBAK_RESTIC_PASSWORD", "test-password")
+	defer os.Unsetenv("CODEBAK_RESTIC_PASSWORD")
+
+	source := config.Source{
+		Path: "/nonexistent/.ssh",
+		Type: config.SourceTypeSensitive,
+	}
+
+	cfg := &config.Config{
+		BackupDir: "/tmp/backups",
+		Restic: config.ResticConfig{
+			RepoPath: "/tmp/restic-repo",
+		},
+	}
+
+	result := svc.BackupSensitiveSource(cfg, source)
+	if !result.Skipped {
+		t.Error("Should be skipped when source path doesn't exist")
+	}
+	if result.Reason != "source path does not exist" {
+		t.Errorf("reason = %q, expected %q", result.Reason, "source path does not exist")
+	}
+}
+
+func TestBackupSensitiveSourceNoPassword(t *testing.T) {
+	mockFS := mocks.NewMockFileSystem()
+	mockGit := mocks.NewMockGitClient()
+	mockArchiver := mocks.NewMockArchiver()
+	mockRestic := mocks.NewMockResticClient()
+
+	// Make sure password is not set
+	os.Unsetenv("CODEBAK_RESTIC_PASSWORD")
+
+	svc := NewService(mockFS, mockGit, mockArchiver, mockRestic)
+
+	source := config.Source{
+		Path: "/test/.ssh",
+		Type: config.SourceTypeSensitive,
+	}
+
+	cfg := &config.Config{
+		BackupDir: "/tmp/backups",
+		Restic: config.ResticConfig{
+			RepoPath: "/tmp/restic-repo",
+		},
+	}
+
+	result := svc.BackupSensitiveSource(cfg, source)
+	if result.Error == nil {
+		t.Error("Should fail when password env var is not set")
+	}
+}
+
+func TestBackupSensitiveSourceResticBackupError(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	mockFS := mocks.NewMockFileSystem()
+	mockGit := mocks.NewMockGitClient()
+	mockArchiver := mocks.NewMockArchiver()
+	mockRestic := mocks.NewMockResticClient()
+
+	// Create directory
+	sshDir := filepath.Join(tempDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0755); err != nil {
+		t.Fatalf("Failed to create ssh dir: %v", err)
+	}
+
+	repoPath := filepath.Join(tempDir, "restic-repo")
+
+	mockFS.Stats[sshDir] = &mockFileInfo{name: ".ssh", isDir: true}
+	mockRestic.Errors.Backup = os.ErrPermission
+
+	svc := NewService(mockFS, mockGit, mockArchiver, mockRestic)
+
+	os.Setenv("CODEBAK_RESTIC_PASSWORD", "test-password")
+	defer os.Unsetenv("CODEBAK_RESTIC_PASSWORD")
+
+	source := config.Source{
+		Path: sshDir,
+		Type: config.SourceTypeSensitive,
+	}
+
+	cfg := &config.Config{
+		BackupDir: filepath.Join(tempDir, "backups"),
+		Restic: config.ResticConfig{
+			RepoPath: repoPath,
+		},
+	}
+
+	result := svc.BackupSensitiveSource(cfg, source)
+	if result.Error == nil {
+		t.Error("Should fail when restic backup fails")
+	}
+}
+
+func TestRunBackupMixedSources(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create git source directory with a project
+	codeDir := filepath.Join(tempDir, "code")
+	projectDir := filepath.Join(codeDir, "my-project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// Create sensitive source directory
+	sshDir := filepath.Join(tempDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0755); err != nil {
+		t.Fatalf("Failed to create ssh dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sshDir, "id_rsa"), []byte("key"), 0600); err != nil {
+		t.Fatalf("Failed to create key file: %v", err)
+	}
+
+	backupDir := filepath.Join(tempDir, "backups")
+	repoPath := filepath.Join(tempDir, "restic-repo")
+
+	os.Setenv("CODEBAK_RESTIC_PASSWORD", "test-password")
+	defer os.Unsetenv("CODEBAK_RESTIC_PASSWORD")
+
+	// Use real filesystem and git, but mock restic
+	mockRestic := mocks.NewMockResticClient()
+	svc := NewService(
+		&osfs.OSFileSystem{},
+		&execgit.ExecGitClient{},
+		ziparchiver.New(),
+		mockRestic,
+	)
+
+	cfg := &config.Config{
+		Sources: []config.Source{
+			{Path: codeDir, Type: config.SourceTypeGit, Label: "Code"},
+			{Path: sshDir, Type: config.SourceTypeSensitive, Label: "SSH Keys"},
+		},
+		BackupDir: backupDir,
+		Restic: config.ResticConfig{
+			RepoPath: repoPath,
+		},
+	}
+
+	results, err := svc.RunBackup(cfg)
+	if err != nil {
+		t.Fatalf("RunBackup failed: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("Expected 2 results, got %d", len(results))
+	}
+
+	// Check we have one of each type
+	var hasGit, hasSensitive bool
+	for _, r := range results {
+		if r.SourceType == config.SourceTypeGit {
+			hasGit = true
+			if r.Error != nil {
+				t.Errorf("Git backup failed: %v", r.Error)
+			}
+		}
+		if r.SourceType == config.SourceTypeSensitive {
+			hasSensitive = true
+			if r.Error != nil {
+				t.Errorf("Sensitive backup failed: %v", r.Error)
+			}
+			if r.SnapshotID == "" {
+				t.Error("Sensitive backup should have SnapshotID")
+			}
+		}
+	}
+
+	if !hasGit {
+		t.Error("Missing git backup result")
+	}
+	if !hasSensitive {
+		t.Error("Missing sensitive backup result")
+	}
+}
+
+func TestRunBackupSensitiveSourcesOnly(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create two sensitive source directories
+	sshDir := filepath.Join(tempDir, ".ssh")
+	awsDir := filepath.Join(tempDir, ".aws")
+	for _, dir := range []string{sshDir, awsDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("Failed to create dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "config"), []byte("config"), 0600); err != nil {
+			t.Fatalf("Failed to create file: %v", err)
+		}
+	}
+
+	backupDir := filepath.Join(tempDir, "backups")
+	repoPath := filepath.Join(tempDir, "restic-repo")
+
+	os.Setenv("CODEBAK_RESTIC_PASSWORD", "test-password")
+	defer os.Unsetenv("CODEBAK_RESTIC_PASSWORD")
+
+	// Use real filesystem but mock restic
+	mockRestic := mocks.NewMockResticClient()
+	svc := NewService(
+		&osfs.OSFileSystem{},
+		&execgit.ExecGitClient{},
+		ziparchiver.New(),
+		mockRestic,
+	)
+
+	cfg := &config.Config{
+		Sources: []config.Source{
+			{Path: sshDir, Type: config.SourceTypeSensitive, Label: "SSH"},
+			{Path: awsDir, Type: config.SourceTypeSensitive, Label: "AWS"},
+		},
+		BackupDir: backupDir,
+		Restic: config.ResticConfig{
+			RepoPath: repoPath,
+		},
+	}
+
+	results, err := svc.RunBackup(cfg)
+	if err != nil {
+		t.Fatalf("RunBackup failed: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("Expected 2 results, got %d", len(results))
+	}
+
+	for _, r := range results {
+		if r.Error != nil {
+			t.Errorf("Backup of %s failed: %v", r.Project, r.Error)
+		}
+		if r.SourceType != config.SourceTypeSensitive {
+			t.Errorf("Expected SourceType sensitive, got %q", r.SourceType)
+		}
 	}
 }

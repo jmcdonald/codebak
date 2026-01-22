@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jmcdonald/codebak/internal/adapters/execgit"
+	"github.com/jmcdonald/codebak/internal/adapters/execrestic"
 	"github.com/jmcdonald/codebak/internal/adapters/osfs"
 	"github.com/jmcdonald/codebak/internal/adapters/ziparchiver"
 	"github.com/jmcdonald/codebak/internal/config"
@@ -17,14 +18,16 @@ import (
 
 // BackupResult contains the result of a backup operation.
 type BackupResult struct {
-	Project   string
-	ZipPath   string
-	Size      int64
-	FileCount int
-	GitHead   string
-	Skipped   bool
-	Reason    string
-	Error     error
+	Project    string
+	ZipPath    string
+	SnapshotID string // For restic backups
+	Size       int64
+	FileCount  int
+	GitHead    string
+	Skipped    bool
+	Reason     string
+	Error      error
+	SourceType config.SourceType // git or sensitive
 }
 
 // ZipResult contains results from createZip including any skipped files.
@@ -38,14 +41,16 @@ type Service struct {
 	fs       ports.FileSystem
 	git      ports.GitClient
 	archiver ports.Archiver
+	restic   ports.ResticClient
 }
 
 // NewService creates a new backup service with the given dependencies.
-func NewService(fs ports.FileSystem, git ports.GitClient, archiver ports.Archiver) *Service {
+func NewService(fs ports.FileSystem, git ports.GitClient, archiver ports.Archiver, restic ports.ResticClient) *Service {
 	return &Service{
 		fs:       fs,
 		git:      git,
 		archiver: archiver,
+		restic:   restic,
 	}
 }
 
@@ -55,6 +60,7 @@ func NewDefaultService() *Service {
 		osfs.New(),
 		execgit.New(),
 		ziparchiver.New(),
+		execrestic.New(),
 	)
 }
 
@@ -253,6 +259,82 @@ func (s *Service) BackupProject(cfg *config.Config, project string) BackupResult
 	return result
 }
 
+// BackupSensitiveSource backs up a sensitive source using restic.
+func (s *Service) BackupSensitiveSource(cfg *config.Config, source config.Source) BackupResult {
+	result := BackupResult{
+		Project:    source.Label,
+		SourceType: config.SourceTypeSensitive,
+	}
+
+	// Use label or path basename as name
+	if result.Project == "" {
+		result.Project = filepath.Base(source.Path)
+	}
+
+	// Get restic repo path
+	repoPath, err := cfg.GetResticRepoPath()
+	if err != nil {
+		result.Error = fmt.Errorf("getting restic repo path: %w", err)
+		return result
+	}
+
+	// Get restic password
+	password, err := cfg.GetResticPassword()
+	if err != nil {
+		result.Error = err
+		return result
+	}
+
+	// Expand source path
+	sourcePath, err := config.ExpandPath(source.Path)
+	if err != nil {
+		result.Error = fmt.Errorf("expanding source path: %w", err)
+		return result
+	}
+
+	// Check if source exists
+	if _, err := s.fs.Stat(sourcePath); err != nil {
+		if os.IsNotExist(err) {
+			result.Skipped = true
+			result.Reason = "source path does not exist"
+			return result
+		}
+		result.Error = fmt.Errorf("checking source path: %w", err)
+		return result
+	}
+
+	// Initialize repo if needed
+	if !s.restic.IsInitialized(repoPath) {
+		// Create repo directory
+		if err := s.fs.MkdirAll(filepath.Dir(repoPath), 0755); err != nil {
+			result.Error = fmt.Errorf("creating restic repo directory: %w", err)
+			return result
+		}
+		if err := s.restic.Init(repoPath, password); err != nil {
+			result.Error = fmt.Errorf("initializing restic repo: %w", err)
+			return result
+		}
+	}
+
+	// Create backup with source path as tag for identification
+	tag := filepath.Base(sourcePath)
+	snapshotID, err := s.restic.Backup(repoPath, password, []string{sourcePath}, []string{tag})
+	if err != nil {
+		result.Error = fmt.Errorf("restic backup failed: %w", err)
+		return result
+	}
+
+	result.SnapshotID = snapshotID
+	result.Reason = "restic backup created"
+
+	// Apply retention policy
+	if cfg.Retention.KeepLast > 0 {
+		_ = s.restic.Forget(repoPath, password, cfg.Retention.KeepLast, false)
+	}
+
+	return result
+}
+
 // RunBackup backs up all changed projects from all configured sources.
 func (s *Service) RunBackup(cfg *config.Config) ([]BackupResult, error) {
 	var results []BackupResult
@@ -260,6 +342,23 @@ func (s *Service) RunBackup(cfg *config.Config) ([]BackupResult, error) {
 
 	// Iterate over all sources
 	for _, source := range cfg.GetSources() {
+		// Branch on source type
+		if source.Type == config.SourceTypeSensitive {
+			// Use source path as the unique identifier for sensitive sources
+			sourcePath, err := config.ExpandPath(source.Path)
+			if err != nil {
+				continue
+			}
+			if seen[sourcePath] {
+				continue
+			}
+			seen[sourcePath] = true
+			result := s.BackupSensitiveSource(cfg, source)
+			results = append(results, result)
+			continue
+		}
+
+		// Git source: existing behavior
 		sourceDir, err := config.ExpandPath(source.Path)
 		if err != nil {
 			continue // Skip sources that can't be expanded
@@ -276,6 +375,7 @@ func (s *Service) RunBackup(cfg *config.Config) ([]BackupResult, error) {
 			}
 			seen[project] = true
 			result := s.BackupProject(cfg, project)
+			result.SourceType = config.SourceTypeGit
 			results = append(results, result)
 		}
 	}
@@ -292,6 +392,7 @@ func (s *Service) RunBackup(cfg *config.Config) ([]BackupResult, error) {
 		}
 		seen[name] = true
 		result := s.BackupProject(cfg, name)
+		result.SourceType = config.SourceTypeGit
 		results = append(results, result)
 	}
 

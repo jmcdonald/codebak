@@ -874,3 +874,199 @@ func TestApplySourceDefaultsDoesNotModifyOriginal(t *testing.T) {
 		t.Errorf("Returned source should have default type")
 	}
 }
+
+// ============================================================================
+// Tests for restic configuration
+// ============================================================================
+
+func TestDefaultResticRepoPath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("Cannot get home dir, skipping test")
+	}
+
+	path, err := DefaultResticRepoPath()
+	if err != nil {
+		t.Fatalf("DefaultResticRepoPath failed: %v", err)
+	}
+
+	expected := filepath.Join(home, ".codebak", "restic-repo")
+	if path != expected {
+		t.Errorf("DefaultResticRepoPath = %q, expected %q", path, expected)
+	}
+}
+
+func TestGetResticRepoPathDefault(t *testing.T) {
+	cfg := &Config{}
+
+	path, err := cfg.GetResticRepoPath()
+	if err != nil {
+		t.Fatalf("GetResticRepoPath failed: %v", err)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("Cannot get home dir, skipping test")
+	}
+
+	expected := filepath.Join(home, ".codebak", "restic-repo")
+	if path != expected {
+		t.Errorf("GetResticRepoPath = %q, expected %q", path, expected)
+	}
+}
+
+func TestGetResticRepoPathCustom(t *testing.T) {
+	cfg := &Config{
+		Restic: ResticConfig{
+			RepoPath: "/custom/restic-repo",
+		},
+	}
+
+	path, err := cfg.GetResticRepoPath()
+	if err != nil {
+		t.Fatalf("GetResticRepoPath failed: %v", err)
+	}
+
+	if path != "/custom/restic-repo" {
+		t.Errorf("GetResticRepoPath = %q, expected %q", path, "/custom/restic-repo")
+	}
+}
+
+func TestGetResticRepoPathExpands(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("Cannot get home dir, skipping test")
+	}
+
+	cfg := &Config{
+		Restic: ResticConfig{
+			RepoPath: "~/my-restic-repo",
+		},
+	}
+
+	path, err := cfg.GetResticRepoPath()
+	if err != nil {
+		t.Fatalf("GetResticRepoPath failed: %v", err)
+	}
+
+	expected := filepath.Join(home, "my-restic-repo")
+	if path != expected {
+		t.Errorf("GetResticRepoPath = %q, expected %q", path, expected)
+	}
+}
+
+func TestGetResticPasswordEnvVarDefault(t *testing.T) {
+	cfg := &Config{}
+
+	envVar := cfg.GetResticPasswordEnvVar()
+	if envVar != DefaultResticPasswordEnvVar {
+		t.Errorf("GetResticPasswordEnvVar = %q, expected %q", envVar, DefaultResticPasswordEnvVar)
+	}
+}
+
+func TestGetResticPasswordEnvVarCustom(t *testing.T) {
+	cfg := &Config{
+		Restic: ResticConfig{
+			PasswordEnvVar: "MY_CUSTOM_PASSWORD",
+		},
+	}
+
+	envVar := cfg.GetResticPasswordEnvVar()
+	if envVar != "MY_CUSTOM_PASSWORD" {
+		t.Errorf("GetResticPasswordEnvVar = %q, expected %q", envVar, "MY_CUSTOM_PASSWORD")
+	}
+}
+
+func TestGetResticPassword(t *testing.T) {
+	// Set password
+	os.Setenv("CODEBAK_RESTIC_PASSWORD", "test-password-123")
+	defer os.Unsetenv("CODEBAK_RESTIC_PASSWORD")
+
+	cfg := &Config{}
+
+	password, err := cfg.GetResticPassword()
+	if err != nil {
+		t.Fatalf("GetResticPassword failed: %v", err)
+	}
+
+	if password != "test-password-123" {
+		t.Errorf("GetResticPassword = %q, expected %q", password, "test-password-123")
+	}
+}
+
+func TestGetResticPasswordNotSet(t *testing.T) {
+	// Ensure password is not set
+	os.Unsetenv("CODEBAK_RESTIC_PASSWORD")
+
+	cfg := &Config{}
+
+	_, err := cfg.GetResticPassword()
+	if err == nil {
+		t.Error("GetResticPassword should fail when env var is not set")
+	}
+}
+
+func TestGetResticPasswordCustomEnvVar(t *testing.T) {
+	// Set custom env var
+	os.Setenv("MY_RESTIC_PW", "custom-password")
+	defer os.Unsetenv("MY_RESTIC_PW")
+
+	cfg := &Config{
+		Restic: ResticConfig{
+			PasswordEnvVar: "MY_RESTIC_PW",
+		},
+	}
+
+	password, err := cfg.GetResticPassword()
+	if err != nil {
+		t.Fatalf("GetResticPassword failed: %v", err)
+	}
+
+	if password != "custom-password" {
+		t.Errorf("GetResticPassword = %q, expected %q", password, "custom-password")
+	}
+}
+
+func TestResticConfigYAMLRoundtrip(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	// Create config directory
+	configDir := filepath.Join(tempDir, ".codebak")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("Failed to create config dir: %v", err)
+	}
+
+	// Write config with restic settings
+	configPath := filepath.Join(configDir, "config.yaml")
+	configContent := `
+backup_dir: /backup
+restic:
+  repo_path: /my/restic/repo
+  password_env_var: CUSTOM_PW_VAR
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	// Load and verify
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.Restic.RepoPath != "/my/restic/repo" {
+		t.Errorf("Restic.RepoPath = %q, expected %q", cfg.Restic.RepoPath, "/my/restic/repo")
+	}
+
+	if cfg.Restic.PasswordEnvVar != "CUSTOM_PW_VAR" {
+		t.Errorf("Restic.PasswordEnvVar = %q, expected %q", cfg.Restic.PasswordEnvVar, "CUSTOM_PW_VAR")
+	}
+}

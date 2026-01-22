@@ -50,6 +50,16 @@ type Source struct {
 	Type  SourceType `yaml:"type,omitempty"`  // Backup type: git (default) or sensitive
 }
 
+// ResticConfig holds configuration for restic encrypted backups.
+type ResticConfig struct {
+	// RepoPath is the path to the restic repository for sensitive backups.
+	// Defaults to ~/.codebak/restic-repo
+	RepoPath string `yaml:"repo_path,omitempty"`
+	// PasswordEnvVar is the environment variable name containing the repository password.
+	// Defaults to CODEBAK_RESTIC_PASSWORD
+	PasswordEnvVar string `yaml:"password_env_var,omitempty"`
+}
+
 type Config struct {
 	// Deprecated: Use Sources instead. Kept for backwards compatibility.
 	SourceDir string   `yaml:"source_dir,omitempty"`
@@ -63,6 +73,8 @@ type Config struct {
 	Retention struct {
 		KeepLast int `yaml:"keep_last"`
 	} `yaml:"retention"`
+	// Restic configuration for sensitive path backups
+	Restic ResticConfig `yaml:"restic,omitempty"`
 }
 
 // GetSources returns all sources, migrating from SourceDir if needed
@@ -108,6 +120,45 @@ func (c *Config) GetSourcesByType(t SourceType) []Source {
 		}
 	}
 	return result
+}
+
+// DefaultResticRepoPath returns the default restic repository path.
+func DefaultResticRepoPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrNoHomeDir, err)
+	}
+	return filepath.Join(home, ".codebak", "restic-repo"), nil
+}
+
+// DefaultResticPasswordEnvVar is the default environment variable for the restic password.
+const DefaultResticPasswordEnvVar = "CODEBAK_RESTIC_PASSWORD"
+
+// GetResticRepoPath returns the restic repository path with defaults applied.
+func (c *Config) GetResticRepoPath() (string, error) {
+	if c.Restic.RepoPath != "" {
+		return ExpandPath(c.Restic.RepoPath)
+	}
+	return DefaultResticRepoPath()
+}
+
+// GetResticPasswordEnvVar returns the environment variable name for the restic password.
+func (c *Config) GetResticPasswordEnvVar() string {
+	if c.Restic.PasswordEnvVar != "" {
+		return c.Restic.PasswordEnvVar
+	}
+	return DefaultResticPasswordEnvVar
+}
+
+// GetResticPassword retrieves the restic password from the configured environment variable.
+// Returns an error if the environment variable is not set.
+func (c *Config) GetResticPassword() (string, error) {
+	envVar := c.GetResticPasswordEnvVar()
+	password := os.Getenv(envVar)
+	if password == "" {
+		return "", fmt.Errorf("restic password not set: environment variable %s is empty", envVar)
+	}
+	return password, nil
 }
 
 // IsValidSourceType checks if a source type is valid
