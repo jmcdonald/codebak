@@ -8,7 +8,7 @@
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/platform-macOS-lightgrey?style=flat-square&logo=apple" alt="macOS">
-    <a href="https://github.com/jmcdonald/codebak/releases"><img src="https://img.shields.io/badge/release-v1.0.0-blue?style=flat-square" alt="Release"></a>
+    <a href="https://github.com/jmcdonald/codebak/releases"><img src="https://img.shields.io/badge/release-v1.0.1-blue?style=flat-square" alt="Release"></a>
     <a href="https://github.com/jmcdonald/codebak/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
     <a href="https://go.dev/"><img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat-square&logo=go" alt="Go"></a>
     <a href="https://github.com/jmcdonald/codebak/actions"><img src="https://img.shields.io/github/actions/workflow/status/jmcdonald/codebak/ci.yml?style=flat-square" alt="Build"></a>
