@@ -85,7 +85,7 @@ func (c *Config) GetSources() []Source {
 	}
 	// Migrate from old SourceDir format
 	if c.SourceDir != "" {
-		return []Source{{Path: c.SourceDir, Label: "Code", Icon: "📁", Type: SourceTypeGit}}
+		return []Source{{Path: c.SourceDir, Label: "Code", Icon: "●", Type: SourceTypeGit}}
 	}
 	return nil
 }
@@ -102,9 +102,9 @@ func applySourceDefaults(sources []Source) []Source {
 		// Default icon based on type
 		if result[i].Icon == "" {
 			if result[i].Type == SourceTypeSensitive {
-				result[i].Icon = "🔒"
+				result[i].Icon = "◆"
 			} else {
-				result[i].Icon = "📁"
+				result[i].Icon = "●"
 			}
 		}
 	}
@@ -176,7 +176,7 @@ func DefaultConfig() (*Config, error) {
 	return &Config{
 		SourceDir: codeDir, // Deprecated but kept for backward compatibility
 		Sources: []Source{
-			{Path: codeDir, Label: "Code", Icon: "📁"},
+			{Path: codeDir, Label: "Code", Icon: "●"},
 		},
 		BackupDir: filepath.Join(home, ".codebak", "backups"),
 		Schedule:  "daily",

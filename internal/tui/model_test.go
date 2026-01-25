@@ -2776,8 +2776,8 @@ func TestRenderSnapshotsViewEmpty(t *testing.T) {
 
 	output := m.View()
 
-	if !contains(output, "🔒") {
-		t.Error("View should contain lock icon")
+	if !contains(output, "◆") {
+		t.Error("View should contain diamond icon for sensitive")
 	}
 	if !contains(output, "No snapshots found") {
 		t.Error("View should indicate no snapshots")
@@ -2798,8 +2798,8 @@ func TestRenderSnapshotsViewWithData(t *testing.T) {
 
 	output := m.View()
 
-	if !contains(output, "🔒") {
-		t.Error("View should contain lock icon")
+	if !contains(output, "◆") {
+		t.Error("View should contain diamond icon for sensitive")
 	}
 	if !contains(output, "abcd1234") {
 		t.Error("View should contain truncated snapshot ID")
@@ -2813,8 +2813,8 @@ func TestProjectItemSourceType(t *testing.T) {
 	svc := mocks.NewMockTUIService()
 	svc.ConfigResult = &config.Config{}
 	svc.Projects = []ports.TUIProjectInfo{
-		{Name: "Sensitive", SourceType: "sensitive", SourceIcon: "🔒"},
-		{Name: "my-code", SourceType: "git", SourceIcon: "📁"},
+		{Name: "Sensitive", SourceType: "sensitive", SourceIcon: "◆"},
+		{Name: "my-code", SourceType: "git", SourceIcon: "●"},
 	}
 
 	m, err := NewModelWithService("test", svc)
@@ -2830,12 +2830,132 @@ func TestProjectItemSourceType(t *testing.T) {
 	if m.projects[0].SourceType != "sensitive" {
 		t.Errorf("projects[0].SourceType = %q, expected %q", m.projects[0].SourceType, "sensitive")
 	}
-	if m.projects[0].SourceIcon != "🔒" {
-		t.Errorf("projects[0].SourceIcon = %q, expected %q", m.projects[0].SourceIcon, "🔒")
+	if m.projects[0].SourceIcon != "◆" {
+		t.Errorf("projects[0].SourceIcon = %q, expected %q", m.projects[0].SourceIcon, "◆")
 	}
 
 	// Check git source
 	if m.projects[1].SourceType != "git" {
 		t.Errorf("projects[1].SourceType = %q, expected %q", m.projects[1].SourceType, "git")
+	}
+}
+
+func TestSourcesLineNavigation(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	svc.ConfigResult = &config.Config{
+		Sources: []config.Source{
+			{Path: "~/code", Label: "Code", Type: config.SourceTypeGit},
+			{Path: "~/.ssh", Label: "SSH", Type: config.SourceTypeSensitive},
+		},
+	}
+	svc.Projects = []ports.TUIProjectInfo{
+		{Name: "project-a", SourceType: "git", SourceIcon: "●"},
+	}
+
+	m, err := NewModelWithService("test", svc)
+	if err != nil {
+		t.Fatalf("NewModelWithService failed: %v", err)
+	}
+
+	// Verify sources are loaded
+	if len(m.sources) != 2 {
+		t.Fatalf("sources = %d, expected 2", len(m.sources))
+	}
+
+	// Start at first project, sources line not selected
+	if m.sourcesLineSelected {
+		t.Error("sourcesLineSelected should be false initially")
+	}
+	if m.projectCursor != 0 {
+		t.Errorf("projectCursor = %d, expected 0", m.projectCursor)
+	}
+
+	// Move up - should select sources line
+	m.moveCursor(-1)
+	if !m.sourcesLineSelected {
+		t.Error("sourcesLineSelected should be true after moving up from first project")
+	}
+
+	// Move up again - should stay on sources line
+	m.moveCursor(-1)
+	if !m.sourcesLineSelected {
+		t.Error("sourcesLineSelected should remain true")
+	}
+
+	// Move down - should go back to first project
+	m.moveCursor(1)
+	if m.sourcesLineSelected {
+		t.Error("sourcesLineSelected should be false after moving down")
+	}
+	if m.projectCursor != 0 {
+		t.Errorf("projectCursor = %d, expected 0", m.projectCursor)
+	}
+}
+
+func TestRenderSourcesView(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	svc.ConfigResult = &config.Config{
+		Sources: []config.Source{
+			{Path: "~/code", Label: "Code", Icon: "●", Type: config.SourceTypeGit},
+			{Path: "~/.ssh", Label: "SSH", Icon: "◆", Type: config.SourceTypeSensitive},
+		},
+	}
+	svc.Projects = []ports.TUIProjectInfo{}
+
+	m := NewModelWithConfig(svc.ConfigResult, svc)
+	m.sources = svc.ConfigResult.Sources
+	m.view = SourcesView
+	m.sourcesCursor = 0
+	m.width = 80
+	m.height = 24
+
+	output := m.View()
+
+	if !contains(output, "sources") {
+		t.Error("View should contain 'sources' title")
+	}
+	if !contains(output, "~/code") {
+		t.Error("View should contain source path ~/code")
+	}
+	if !contains(output, "git") {
+		t.Error("View should contain type 'git'")
+	}
+	if !contains(output, "encrypted") {
+		t.Error("View should contain type 'encrypted'")
+	}
+}
+
+func TestBuildSourcesLine(t *testing.T) {
+	svc := mocks.NewMockTUIService()
+	m := NewModelWithConfig(&config.Config{}, svc)
+
+	// No sources
+	m.sources = nil
+	line := m.buildSourcesLine()
+	if line != "No sources configured" {
+		t.Errorf("buildSourcesLine() = %q, expected 'No sources configured'", line)
+	}
+
+	// Single source
+	m.sources = []config.Source{
+		{Path: "~/code"},
+	}
+	line = m.buildSourcesLine()
+	if !contains(line, "Backing up:") {
+		t.Errorf("buildSourcesLine() = %q, should contain 'Backing up:'", line)
+	}
+	if !contains(line, "~/code") {
+		t.Errorf("buildSourcesLine() = %q, should contain '~/code'", line)
+	}
+
+	// Multiple sources
+	m.sources = []config.Source{
+		{Path: "~/code"},
+		{Path: "~/.ssh"},
+		{Path: "~/.config"},
+	}
+	line = m.buildSourcesLine()
+	if !contains(line, "~/code") || !contains(line, "~/.ssh") {
+		t.Errorf("buildSourcesLine() = %q, should contain source paths", line)
 	}
 }

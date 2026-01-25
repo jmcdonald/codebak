@@ -122,7 +122,7 @@ func (s *Service) ListProjects(cfg *config.Config) ([]ports.TUIProjectInfo, erro
 			Name:        name,
 			Path:        expandedPath,
 			SourceLabel: "Project",
-			SourceIcon:  "📌",
+			SourceIcon:  "■",
 		}
 
 		// Load manifest if exists

@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Custom labels and icons per source
 
 - **TUI Enhancements**:
-  - 🔒 icon for sensitive sources in project list
+  - ◆ icon for sensitive sources in project list
   - Snapshot count display for restic-backed sources
   - Snapshot list view when selecting sensitive sources
 
