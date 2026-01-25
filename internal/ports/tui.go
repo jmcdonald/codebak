@@ -11,7 +11,7 @@ type TUIProjectInfo struct {
 	Name        string
 	Path        string
 	SourceLabel string // Label of the source directory (e.g., "Code", "Work")
-	SourceIcon  string // Icon for display (e.g., "📁", "💼", "🔒")
+	SourceIcon  string // Icon for display (e.g., "●" git, "◆" sensitive, "■" project)
 	SourceType  string // Source type: "git" or "sensitive"
 	Versions    int
 	LastBackup  time.Time

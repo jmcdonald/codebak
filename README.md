@@ -169,7 +169,7 @@ echo 'export CODEBAK_RESTIC_PASSWORD="your-secure-password"' >> ~/.zshrc
 - Deduplication across all sensitive sources
 - Automatic repository initialization on first backup
 
-Sensitive sources display with a 🔒 icon in the TUI and show snapshot counts instead of versions.
+Sensitive sources display with a ◆ icon in the TUI and show snapshot counts instead of versions.
 
 ## Usage
 

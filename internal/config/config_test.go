@@ -710,28 +710,28 @@ func TestGetSourcesAppliesDefaults(t *testing.T) {
 
 	sources := cfg.GetSources()
 
-	// First source should default to git with folder icon
+	// First source should default to git with bullet icon
 	if sources[0].Type != SourceTypeGit {
 		t.Errorf("sources[0].Type = %q, expected %q", sources[0].Type, SourceTypeGit)
 	}
-	if sources[0].Icon != "📁" {
-		t.Errorf("sources[0].Icon = %q, expected %q", sources[0].Icon, "📁")
+	if sources[0].Icon != "●" {
+		t.Errorf("sources[0].Icon = %q, expected %q", sources[0].Icon, "●")
 	}
 
-	// Second source should keep git with folder icon
+	// Second source should keep git with bullet icon
 	if sources[1].Type != SourceTypeGit {
 		t.Errorf("sources[1].Type = %q, expected %q", sources[1].Type, SourceTypeGit)
 	}
-	if sources[1].Icon != "📁" {
-		t.Errorf("sources[1].Icon = %q, expected %q", sources[1].Icon, "📁")
+	if sources[1].Icon != "●" {
+		t.Errorf("sources[1].Icon = %q, expected %q", sources[1].Icon, "●")
 	}
 
-	// Third source should have lock icon
+	// Third source should have diamond icon for sensitive
 	if sources[2].Type != SourceTypeSensitive {
 		t.Errorf("sources[2].Type = %q, expected %q", sources[2].Type, SourceTypeSensitive)
 	}
-	if sources[2].Icon != "🔒" {
-		t.Errorf("sources[2].Icon = %q, expected %q", sources[2].Icon, "🔒")
+	if sources[2].Icon != "◆" {
+		t.Errorf("sources[2].Icon = %q, expected %q", sources[2].Icon, "◆")
 	}
 
 	// Fourth source should keep custom icon

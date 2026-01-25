@@ -23,13 +23,15 @@ type View int
 const (
 	ProjectsView View = iota
 	VersionsView
-	SnapshotsView  // View for restic snapshots (sensitive sources)
-	DiffSelectView // Selecting versions to compare
-	DiffResultView // Showing diff results (file list)
-	FileDiffView   // Showing actual file content diff
-	SettingsView    // Settings/configuration view
-	MoveInputView   // Folder picker for move path
-	MoveConfirmView // Confirmation before moving
+	SnapshotsView      // View for restic snapshots (sensitive sources)
+	DiffSelectView     // Selecting versions to compare
+	DiffResultView     // Showing diff results (file list)
+	FileDiffView       // Showing actual file content diff
+	SettingsView       // Settings/configuration view
+	MoveInputView      // Folder picker for move path
+	MoveConfirmView    // Confirmation before moving
+	SourcesView        // List of configured backup sources
+	SourceDetailView   // Projects within a selected source
 )
 
 // ProjectItem represents a project in the list
@@ -72,9 +74,15 @@ type Model struct {
 	quitting bool
 
 	// Projects view
-	projects        []ProjectItem
-	projectCursor   int
-	selectedProject string
+	projects           []ProjectItem
+	projectCursor      int
+	selectedProject    string
+	sourcesLineSelected bool // True when cursor is on "Backing up:" line
+
+	// Sources view
+	sources        []config.Source
+	sourcesCursor  int
+	selectedSource *config.Source // For SourceDetailView
 
 	// Versions view
 	versions      []VersionItem
@@ -265,6 +273,9 @@ func (m *Model) loadProjects() error {
 		})
 	}
 
+	// Load configured sources for the sources line
+	m.sources = m.config.GetSources()
+
 	return nil
 }
 
@@ -307,6 +318,59 @@ func (m *Model) loadVersions() error {
 	}
 
 	return nil
+}
+
+// loadProjectsForSource filters projects to only those from the selected source
+func (m *Model) loadProjectsForSource(source *config.Source) {
+	// First reload all projects
+	allProjects, err := m.service.ListProjects(m.config)
+	if err != nil {
+		return
+	}
+
+	// Expand source path for comparison
+	sourcePath := source.Path
+	if strings.HasPrefix(sourcePath, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			sourcePath = home + sourcePath[1:]
+		}
+	}
+
+	// Filter to projects from this source
+	m.projects = nil
+	for _, p := range allProjects {
+		// For git sources, check if project path starts with source path
+		// For sensitive sources, match the source path directly
+		if source.Type == config.SourceTypeSensitive {
+			// Sensitive source - the "project" path IS the source path
+			if strings.HasPrefix(p.Path, sourcePath) || p.SourceLabel == source.Label {
+				m.projects = append(m.projects, ProjectItem{
+					Name:        p.Name,
+					Path:        p.Path,
+					SourceLabel: p.SourceLabel,
+					SourceIcon:  p.SourceIcon,
+					SourceType:  p.SourceType,
+					Versions:    p.Versions,
+					LastBackup:  p.LastBackup,
+					TotalSize:   p.TotalSize,
+				})
+			}
+		} else {
+			// Git source - projects are subdirectories
+			if strings.HasPrefix(p.Path, sourcePath) {
+				m.projects = append(m.projects, ProjectItem{
+					Name:        p.Name,
+					Path:        p.Path,
+					SourceLabel: p.SourceLabel,
+					SourceIcon:  p.SourceIcon,
+					SourceType:  p.SourceType,
+					Versions:    p.Versions,
+					LastBackup:  p.LastBackup,
+					TotalSize:   p.TotalSize,
+				})
+			}
+		}
+	}
 }
 
 // Init initializes the model
@@ -388,10 +452,46 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.moveCursor(1)
 
 		case key.Matches(msg, keys.Enter):
-			if m.view == ProjectsView && len(m.projects) > 0 {
+			if m.view == ProjectsView {
+				// Check if sources line is selected
+				if m.sourcesLineSelected && len(m.sources) > 0 {
+					m.view = SourcesView
+					m.sourcesCursor = 0
+					return m, nil
+				}
+				// Normal project selection
+				if len(m.projects) > 0 {
+					project := m.projects[m.projectCursor]
+					m.selectedProject = project.Name
+					// Navigate to snapshots view for sensitive sources, versions view otherwise
+					if project.SourceType == "sensitive" {
+						if err := m.loadSnapshots(); err != nil {
+							m.statusMsg = fmt.Sprintf("Error: %v", err)
+							m.statusErr = true
+						} else {
+							m.view = SnapshotsView
+							m.snapshotCursor = 0
+						}
+					} else {
+						if err := m.loadVersions(); err != nil {
+							m.statusMsg = fmt.Sprintf("Error: %v", err)
+							m.statusErr = true
+						} else {
+							m.view = VersionsView
+							m.versionCursor = 0
+						}
+					}
+				}
+			} else if m.view == SourcesView && len(m.sources) > 0 {
+				// Select a source and show its projects
+				m.selectedSource = &m.sources[m.sourcesCursor]
+				m.loadProjectsForSource(m.selectedSource)
+				m.view = SourceDetailView
+				m.projectCursor = 0
+			} else if m.view == SourceDetailView && len(m.projects) > 0 {
+				// Same as ProjectsView - navigate to versions/snapshots
 				project := m.projects[m.projectCursor]
 				m.selectedProject = project.Name
-				// Navigate to snapshots view for sensitive sources, versions view otherwise
 				if project.SourceType == "sensitive" {
 					if err := m.loadSnapshots(); err != nil {
 						m.statusMsg = fmt.Sprintf("Error: %v", err)
@@ -422,11 +522,28 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, keys.Back):
 			switch m.view {
 			case VersionsView:
-				m.view = ProjectsView
+				// Go back based on where we came from
+				if m.selectedSource != nil {
+					m.view = SourceDetailView
+				} else {
+					m.view = ProjectsView
+				}
 				m.versions = nil
 			case SnapshotsView:
-				m.view = ProjectsView
+				if m.selectedSource != nil {
+					m.view = SourceDetailView
+				} else {
+					m.view = ProjectsView
+				}
 				m.snapshots = nil
+			case SourcesView:
+				m.view = ProjectsView
+				m.sourcesLineSelected = true // Return to sources line
+			case SourceDetailView:
+				m.view = SourcesView
+				m.selectedSource = nil
+				// Reload all projects
+				_ = m.loadProjects()
 			case DiffSelectView:
 				m.view = VersionsView
 				m.diffSelections = nil
@@ -482,6 +599,45 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) moveCursor(delta int) {
 	switch m.view {
 	case ProjectsView:
+		// Handle sources line selection
+		if len(m.sources) > 0 {
+			if m.sourcesLineSelected {
+				// Currently on sources line
+				if delta > 0 {
+					// Moving down - go to first project
+					m.sourcesLineSelected = false
+					m.projectCursor = 0
+				}
+				// Moving up stays on sources line (can't go higher)
+				return
+			}
+			// Currently on a project
+			if delta < 0 && m.projectCursor == 0 {
+				// At top of projects, moving up - select sources line
+				m.sourcesLineSelected = true
+				return
+			}
+		}
+		// Normal project navigation
+		m.projectCursor += delta
+		if m.projectCursor < 0 {
+			m.projectCursor = 0
+		}
+		if m.projectCursor >= len(m.projects) {
+			m.projectCursor = len(m.projects) - 1
+		}
+	case SourcesView:
+		if len(m.sources) == 0 {
+			return
+		}
+		m.sourcesCursor += delta
+		if m.sourcesCursor < 0 {
+			m.sourcesCursor = 0
+		}
+		if m.sourcesCursor >= len(m.sources) {
+			m.sourcesCursor = len(m.sources) - 1
+		}
+	case SourceDetailView:
 		m.projectCursor += delta
 		if m.projectCursor < 0 {
 			m.projectCursor = 0
@@ -545,7 +701,7 @@ func (m *Model) moveCursor(delta int) {
 func (m *Model) handleSettingsSelect() tea.Cmd {
 	switch m.settingsCursor {
 	case 0: // Backup Directory - just show path
-		m.statusMsg = fmt.Sprintf("📁 %s", m.config.BackupDir)
+		m.statusMsg = fmt.Sprintf("● %s", m.config.BackupDir)
 	case 1: // Color Theme
 		m.statusMsg = "🎨 Theme: purple (default) — more themes coming in future release"
 	case 2: // Migrate Backups
@@ -846,6 +1002,10 @@ func (m *Model) View() string {
 		content = m.renderVersionsView()
 	case SnapshotsView:
 		content = m.renderSnapshotsView()
+	case SourcesView:
+		content = m.renderSourcesView()
+	case SourceDetailView:
+		content = m.renderSourceDetailView()
 	case DiffSelectView:
 		content = m.renderDiffSelectView()
 	case DiffResultView:
@@ -867,9 +1027,24 @@ func (m *Model) renderProjectsView() string {
 	var b strings.Builder
 
 	// Title
-	title := titleStyle.Render(" 📦 codebak ")
+	title := titleStyle.Render(" ▣ codebak ")
 	b.WriteString(title)
 	b.WriteString("\n\n")
+
+	// Sources line (selectable - navigates to SourcesView)
+	if len(m.sources) > 0 {
+		sourcesLine := m.buildSourcesLine()
+		cursor := "  "
+		style := dimStyle
+		if m.sourcesLineSelected {
+			cursor = "▸ "
+			style = selectedStyle
+		}
+		b.WriteString(style.Render(cursor + sourcesLine))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(strings.Repeat("─", 70)))
+		b.WriteString("\n")
+	}
 
 	// Header
 	header := fmt.Sprintf("  %-28s %8s %12s %s",
@@ -953,7 +1128,7 @@ func (m *Model) renderVersionsView() string {
 	var b strings.Builder
 
 	// Title
-	title := titleStyle.Render(fmt.Sprintf(" 📦 %s ", m.selectedProject))
+	title := titleStyle.Render(fmt.Sprintf(" ▣ %s ", m.selectedProject))
 	b.WriteString(title)
 	b.WriteString("\n\n")
 
@@ -1033,7 +1208,7 @@ func (m *Model) renderSnapshotsView() string {
 	var b strings.Builder
 
 	// Title
-	title := titleStyle.Render(fmt.Sprintf(" 🔒 %s ", m.selectedProject))
+	title := titleStyle.Render(fmt.Sprintf(" ◆ %s ", m.selectedProject))
 	b.WriteString(title)
 	b.WriteString("\n\n")
 
@@ -1112,6 +1287,237 @@ func (m *Model) renderSnapshotsView() string {
 	b.WriteString(renderSplitFooter(help, m.width))
 
 	return b.String()
+}
+
+func (m *Model) renderSourcesView() string {
+	var b strings.Builder
+
+	// Title
+	title := titleStyle.Render(" ▣ codebak sources ")
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	if len(m.sources) == 0 {
+		b.WriteString(dimStyle.Render("  No sources configured"))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  Edit ~/.codebak/config.yaml to add sources"))
+		b.WriteString("\n\n")
+	} else {
+		// Header
+		header := fmt.Sprintf("  %-30s %12s %10s",
+			"SOURCE", "TYPE", "PROJECTS")
+		b.WriteString(dimStyle.Render(header))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(strings.Repeat("─", 60)))
+		b.WriteString("\n")
+
+		// List items
+		visibleHeight := m.height - 10
+		if visibleHeight < 5 {
+			visibleHeight = 5
+		}
+
+		start := 0
+		if m.sourcesCursor >= visibleHeight {
+			start = m.sourcesCursor - visibleHeight + 1
+		}
+
+		for i := start; i < len(m.sources) && i < start+visibleHeight; i++ {
+			s := m.sources[i]
+			cursor := "  "
+			style := normalStyle
+			if i == m.sourcesCursor {
+				cursor = "▸ "
+				style = selectedStyle
+			}
+
+			// Format path (abbreviate home)
+			path := s.Path
+			if home, err := os.UserHomeDir(); err == nil {
+				if strings.HasPrefix(path, home) {
+					path = "~" + path[len(home):]
+				}
+			}
+
+			// Format type
+			typeStr := "git"
+			if s.Type == config.SourceTypeSensitive {
+				typeStr = "encrypted"
+			}
+
+			// Count projects for this source
+			projectCount := m.countProjectsForSource(&s)
+
+			icon := s.Icon
+			if icon == "" {
+				if s.Type == config.SourceTypeSensitive {
+					icon = "◆"
+				} else {
+					icon = "●"
+				}
+			}
+
+			line := fmt.Sprintf("%s%s %-28s %12s %10d",
+				cursor, icon, truncate(path, 28), typeStr, projectCount)
+			b.WriteString(style.Render(line))
+			b.WriteString("\n")
+		}
+	}
+
+	// Pad to fixed height
+	visibleHeight := m.height - 10
+	for i := len(m.sources); i < visibleHeight; i++ {
+		b.WriteString("\n")
+	}
+
+	// Status
+	b.WriteString("\n")
+	if m.statusMsg != "" {
+		if m.statusErr {
+			b.WriteString(errorBadge.Render(m.statusMsg))
+		} else {
+			b.WriteString(successBadge.Render(m.statusMsg))
+		}
+	}
+	b.WriteString("\n")
+
+	// Help
+	help := "[↑/↓] navigate  [enter] view projects  [esc] back  [q] quit"
+	b.WriteString(renderSplitFooter(help, m.width))
+
+	return b.String()
+}
+
+func (m *Model) renderSourceDetailView() string {
+	var b strings.Builder
+
+	// Title - show source path
+	sourcePath := ""
+	if m.selectedSource != nil {
+		sourcePath = m.selectedSource.Path
+		if home, err := os.UserHomeDir(); err == nil {
+			if strings.HasPrefix(sourcePath, home) {
+				sourcePath = "~" + sourcePath[len(home):]
+			}
+		}
+	}
+	title := titleStyle.Render(fmt.Sprintf(" ▣ %s ", sourcePath))
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	if len(m.projects) == 0 {
+		b.WriteString(dimStyle.Render("  No projects found in this source"))
+		b.WriteString("\n\n")
+	} else {
+		// Header
+		header := fmt.Sprintf("  %-28s %8s %12s %s",
+			"PROJECT", "VERSIONS", "SIZE", "LAST BACKUP")
+		b.WriteString(dimStyle.Render(header))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(strings.Repeat("─", 70)))
+		b.WriteString("\n")
+
+		// List items
+		visibleHeight := m.height - 10
+		if visibleHeight < 5 {
+			visibleHeight = 5
+		}
+
+		start := 0
+		if m.projectCursor >= visibleHeight {
+			start = m.projectCursor - visibleHeight + 1
+		}
+
+		for i := start; i < len(m.projects) && i < start+visibleHeight; i++ {
+			p := m.projects[i]
+			cursor := "  "
+			style := normalStyle
+			if i == m.projectCursor {
+				cursor = "▸ "
+				style = selectedStyle
+			}
+
+			versions := fmt.Sprintf("%d", p.Versions)
+			if p.Versions == 0 {
+				versions = "-"
+			}
+
+			size := backup.FormatSize(p.TotalSize)
+			if p.TotalSize == 0 {
+				size = "-"
+			}
+
+			lastBackup := "-"
+			if !p.LastBackup.IsZero() {
+				lastBackup = relativeTime(p.LastBackup)
+			}
+
+			// Show source icon if available
+			icon := ""
+			if p.SourceIcon != "" {
+				icon = p.SourceIcon + " "
+			}
+
+			line := fmt.Sprintf("%s%s%-26s %8s %12s %s",
+				cursor, icon, truncate(p.Name, 26), versions, size, lastBackup)
+			b.WriteString(style.Render(line))
+			b.WriteString("\n")
+		}
+	}
+
+	// Pad to fixed height
+	visibleHeight := m.height - 10
+	for i := len(m.projects); i < visibleHeight; i++ {
+		b.WriteString("\n")
+	}
+
+	// Status
+	b.WriteString("\n")
+	if m.statusMsg != "" {
+		if m.statusErr {
+			b.WriteString(errorBadge.Render(m.statusMsg))
+		} else {
+			b.WriteString(successBadge.Render(m.statusMsg))
+		}
+	}
+	b.WriteString("\n")
+
+	// Help
+	help := "[↑/↓] navigate  [enter] versions  [r] backup  [esc] back  [q] quit"
+	b.WriteString(renderSplitFooter(help, m.width))
+
+	return b.String()
+}
+
+// countProjectsForSource counts how many projects belong to a source
+func (m *Model) countProjectsForSource(source *config.Source) int {
+	// Get all projects and count matches
+	allProjects, err := m.service.ListProjects(m.config)
+	if err != nil {
+		return 0
+	}
+
+	// Expand source path for comparison
+	sourcePath := source.Path
+	if strings.HasPrefix(sourcePath, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			sourcePath = home + sourcePath[1:]
+		}
+	}
+
+	count := 0
+	for _, p := range allProjects {
+		if source.Type == config.SourceTypeSensitive {
+			if strings.HasPrefix(p.Path, sourcePath) || p.SourceLabel == source.Label {
+				count++
+			}
+		} else {
+			if strings.HasPrefix(p.Path, sourcePath) {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func (m *Model) renderDiffSelectView() string {
@@ -1472,7 +1878,7 @@ func (m *Model) renderMoveInputView() string {
 	var b strings.Builder
 
 	// Title with current path
-	title := titleStyle.Render(" 📁 Select New Backup Location ")
+	title := titleStyle.Render(" ● Select New Backup Location ")
 	b.WriteString(title)
 	b.WriteString("\n")
 
@@ -1598,4 +2004,30 @@ func relativeTime(t time.Time) string {
 	default:
 		return t.Format("Jan 2")
 	}
+}
+
+// buildSourcesLine creates the "Backing up: path1, path2, ..." summary line
+func (m *Model) buildSourcesLine() string {
+	if len(m.sources) == 0 {
+		return "No sources configured"
+	}
+
+	var paths []string
+	for _, s := range m.sources {
+		// Abbreviate home directory
+		path := s.Path
+		if home, err := os.UserHomeDir(); err == nil {
+			if strings.HasPrefix(path, home) {
+				path = "~" + path[len(home):]
+			}
+		}
+		paths = append(paths, path)
+	}
+
+	// Truncate if too many sources
+	line := "Backing up: " + strings.Join(paths, ", ")
+	if len(line) > 66 {
+		line = line[:63] + "..."
+	}
+	return line
 }
