@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"text/template"
+
+	"github.com/jmcdonald/codebak/internal/logrotate"
 )
 
 const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
@@ -149,4 +151,12 @@ func Status() (bool, error) {
 	cmd := exec.Command("launchctl", "list", "com.user.codebak")
 	err := cmd.Run()
 	return err == nil, nil
+}
+
+// RotateLog caps codebak.log at logrotate.DefaultMaxBytes, rotating to
+// codebak.log.1/.2/.3 if it has grown past that. Returns true if rotation
+// happened.
+func RotateLog() (bool, error) {
+	result, err := logrotate.Rotate(LogPath(), logrotate.DefaultMaxBytes)
+	return result.Rotated, err
 }

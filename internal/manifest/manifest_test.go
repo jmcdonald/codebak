@@ -468,16 +468,19 @@ func TestPruneFileMissing(t *testing.T) {
 		},
 	}
 
-	// Prune should handle missing files gracefully
-	_, err = m.Prune(tempDir, 1)
+	// None of these files exist on disk: they are phantom entries and must
+	// never count toward keepLast, so nothing is a candidate for removal
+	// and the manifest is left untouched.
+	deleted, err := m.Prune(tempDir, 1)
 	if err != nil {
 		t.Fatalf("Prune failed: %v", err)
 	}
 
-	// Files were "deleted" (or already missing)
-	// The behavior continues even when file doesn't exist
-	if len(m.Backups) != 1 {
-		t.Errorf("Should have 1 backup remaining, got %d", len(m.Backups))
+	if len(deleted) != 0 {
+		t.Errorf("phantom entries must never be reported as deleted, got %v", deleted)
+	}
+	if len(m.Backups) != 3 {
+		t.Errorf("phantom-only manifest must be left untouched, got %d backups", len(m.Backups))
 	}
 }
 
@@ -573,9 +576,10 @@ func TestPruneRemoveError(t *testing.T) {
 		t.Errorf("Should have 0 deleted (permission denied), got %d", len(deleted))
 	}
 
-	// Manifest should still be pruned
-	if len(m.Backups) != 1 {
-		t.Errorf("Should have 1 backup remaining, got %d", len(m.Backups))
+	// A failed real removal must leave the manifest entry in place rather
+	// than dropping it and orphaning the file on disk.
+	if len(m.Backups) != 3 {
+		t.Errorf("manifest entries must survive a failed removal, got %d backups", len(m.Backups))
 	}
 }
 
@@ -604,5 +608,368 @@ func TestMultipleAddBackups(t *testing.T) {
 	// Last added should be the latest
 	if latest.SizeBytes != 4*1024 {
 		t.Errorf("Latest backup size = %d, expected %d", latest.SizeBytes, 4*1024)
+	}
+}
+
+// ============================================================================
+// Retention manifest tests: dry-run mode and the total-size cap.
+// ============================================================================
+
+func TestPruneWithOptionsDryRunDeletesNothing(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	projectDir := filepath.Join(tempDir, "test-project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	files := []string{
+		"20241213-100000.zip",
+		"20241214-100000.zip",
+		"20241215-100000.zip",
+	}
+	for _, f := range files {
+		if err := os.WriteFile(filepath.Join(projectDir, f), []byte("dummy"), 0644); err != nil {
+			t.Fatalf("Failed to create backup file: %v", err)
+		}
+	}
+
+	m := &Manifest{
+		Project: "test-project",
+		Backups: []BackupEntry{
+			{File: "20241213-100000.zip"},
+			{File: "20241214-100000.zip"},
+			{File: "20241215-100000.zip"},
+		},
+	}
+
+	wouldDelete, err := m.PruneWithOptions(tempDir, 1, true)
+	if err != nil {
+		t.Fatalf("PruneWithOptions dry-run failed: %v", err)
+	}
+
+	if len(wouldDelete) != 2 {
+		t.Errorf("wouldDelete count = %d, expected 2", len(wouldDelete))
+	}
+
+	// Manifest must be untouched.
+	if len(m.Backups) != 3 {
+		t.Errorf("dry-run must not mutate the manifest, got %d backups", len(m.Backups))
+	}
+
+	// No file may have been deleted.
+	for _, f := range files {
+		if _, err := os.Stat(filepath.Join(projectDir, f)); err != nil {
+			t.Errorf("dry-run must not delete %s from disk: %v", f, err)
+		}
+	}
+}
+
+func TestPruneByTotalSizeRemovesOldestFirst(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	projectDir := filepath.Join(tempDir, "test-project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	// Three backups, 100 bytes each on disk. The cap is measured from the
+	// real file on disk, not from SizeBytes, so SizeBytes is deliberately
+	// left wrong here to prove the on-disk stat is what actually drives
+	// the decision (fix for the phantom-entry over-deletion bug).
+	entries := []BackupEntry{
+		{File: "oldest.zip", SizeBytes: 10 * 1024 * 1024 * 1024},
+		{File: "middle.zip", SizeBytes: 10 * 1024 * 1024 * 1024},
+		{File: "newest.zip", SizeBytes: 10 * 1024 * 1024 * 1024},
+	}
+	content := make([]byte, 100)
+	for _, e := range entries {
+		if err := os.WriteFile(filepath.Join(projectDir, e.File), content, 0644); err != nil {
+			t.Fatalf("Failed to create backup file: %v", err)
+		}
+	}
+
+	m := &Manifest{Project: "test-project", Backups: entries}
+
+	// Cap at 200 bytes: on-disk total is 300 bytes, so exactly the oldest
+	// (100 bytes) must go to bring the remaining two (200 bytes) at or
+	// under the cap.
+	maxBytes := int64(200)
+	deleted, err := m.PruneByTotalSize(tempDir, maxBytes, false)
+	if err != nil {
+		t.Fatalf("PruneByTotalSize failed: %v", err)
+	}
+
+	if len(deleted) != 1 || deleted[0] != "oldest.zip" {
+		t.Errorf("deleted = %v, expected [oldest.zip]", deleted)
+	}
+	if len(m.Backups) != 2 {
+		t.Fatalf("remaining backups = %d, expected 2", len(m.Backups))
+	}
+	if m.Backups[len(m.Backups)-1].File != "newest.zip" {
+		t.Error("newest.zip must never be removed by size-based pruning")
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, "oldest.zip")); err == nil {
+		t.Error("oldest.zip should have been deleted from disk")
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, "newest.zip")); err != nil {
+		t.Error("newest.zip should still exist on disk")
+	}
+}
+
+func TestPruneByTotalSizeNeverRemovesLastEntry(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	projectDir := filepath.Join(tempDir, "test-project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	// A single backup that alone exceeds the cap must survive: there is
+	// nothing older to prune, and we never delete the only/newest copy.
+	if err := os.WriteFile(filepath.Join(projectDir, "only.zip"), []byte("dummy"), 0644); err != nil {
+		t.Fatalf("Failed to create backup file: %v", err)
+	}
+	m := &Manifest{
+		Project: "test-project",
+		Backups: []BackupEntry{
+			{File: "only.zip", SizeBytes: 100 * 1024 * 1024 * 1024},
+		},
+	}
+
+	deleted, err := m.PruneByTotalSize(tempDir, 50*1024*1024*1024, false)
+	if err != nil {
+		t.Fatalf("PruneByTotalSize failed: %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Errorf("expected no deletions when only one backup exists, got %v", deleted)
+	}
+	if len(m.Backups) != 1 {
+		t.Error("the sole backup must not be removed")
+	}
+}
+
+func TestPruneByTotalSizeDryRunDeletesNothing(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	projectDir := filepath.Join(tempDir, "test-project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	entries := []BackupEntry{
+		{File: "oldest.zip", SizeBytes: 10 * 1024 * 1024 * 1024},
+		{File: "newest.zip", SizeBytes: 10 * 1024 * 1024 * 1024},
+	}
+	content := make([]byte, 100)
+	for _, e := range entries {
+		if err := os.WriteFile(filepath.Join(projectDir, e.File), content, 0644); err != nil {
+			t.Fatalf("Failed to create backup file: %v", err)
+		}
+	}
+	m := &Manifest{Project: "test-project", Backups: entries}
+
+	// On-disk total is 200 bytes; a 50-byte cap would normally demand
+	// removing both, but the newest must always survive.
+	wouldDelete, err := m.PruneByTotalSize(tempDir, 50, true)
+	if err != nil {
+		t.Fatalf("PruneByTotalSize dry-run failed: %v", err)
+	}
+	if len(wouldDelete) != 1 || wouldDelete[0] != "oldest.zip" {
+		t.Errorf("wouldDelete = %v, expected [oldest.zip]", wouldDelete)
+	}
+	if len(m.Backups) != 2 {
+		t.Error("dry-run must not mutate the manifest")
+	}
+	for _, e := range entries {
+		if _, err := os.Stat(filepath.Join(projectDir, e.File)); err != nil {
+			t.Errorf("dry-run must not delete %s from disk: %v", e.File, err)
+		}
+	}
+}
+
+func TestPruneByTotalSizeDisabledWhenZero(t *testing.T) {
+	m := &Manifest{
+		Project: "test",
+		Backups: []BackupEntry{
+			{File: "a.zip", SizeBytes: 999 * 1024 * 1024 * 1024},
+			{File: "b.zip", SizeBytes: 999 * 1024 * 1024 * 1024},
+		},
+	}
+
+	deleted, err := m.PruneByTotalSize("/tmp", 0, false)
+	if err != nil {
+		t.Fatalf("PruneByTotalSize failed: %v", err)
+	}
+	if len(deleted) != 0 {
+		t.Error("a cap of 0 must mean disabled, not zero-tolerance")
+	}
+	if len(m.Backups) != 2 {
+		t.Error("backups must be unchanged when the cap is disabled")
+	}
+}
+
+// TestPruneByTotalSizePhantomEntriesNeverDeleteRealFile exercises a
+// manifest with three "phantom" entries whose zip files were already
+// deleted by an earlier run, each recorded at 100 GB, plus one real 4 KB
+// zip that is actually on disk, under a 50 GB cap. Before this behavior
+// was fixed, PruneByTotalSize summed the recorded size_bytes (300 GB)
+// regardless of whether the file existed, decided the cap was blown, and
+// deleted the one real file to "make room" for phantom entries that were
+// not consuming any disk space at all. This must fail against the old
+// (size_bytes-summing) behavior and pass once the cap is driven by
+// on-disk stat only.
+func TestPruneByTotalSizePhantomEntriesNeverDeleteRealFile(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	projectDir := filepath.Join(tempDir, "test-project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	const oneHundredGB = 100 * 1024 * 1024 * 1024
+
+	// Backups are ordered oldest to newest. The real zip is the OLDEST
+	// entry here on purpose: the bug this test guards against deleted the
+	// real (older) zip to make room for newer phantom entries whose
+	// recorded size_bytes inflated the total, even though those phantom
+	// files no longer exist on disk at all.
+	entries := []BackupEntry{
+		// Real: actually present on disk, 4 KB, and the oldest entry.
+		{File: "real.zip", SizeBytes: 4096},
+		// Phantom: recorded in the manifest, but the zip is gone.
+		{File: "phantom-1.zip", SizeBytes: oneHundredGB},
+		{File: "phantom-2.zip", SizeBytes: oneHundredGB},
+		{File: "phantom-3.zip", SizeBytes: oneHundredGB},
+	}
+
+	realContent := make([]byte, 4096)
+	if err := os.WriteFile(filepath.Join(projectDir, "real.zip"), realContent, 0644); err != nil {
+		t.Fatalf("Failed to create real.zip: %v", err)
+	}
+	// Deliberately do NOT create phantom-1/2/3.zip: their manifest entries
+	// outlive the file, exactly like a store where an earlier prune or a
+	// manual delete removed the zip but never touched the manifest.
+
+	m := &Manifest{Project: "test-project", Backups: entries}
+
+	maxBytes := int64(50) * 1024 * 1024 * 1024 // 50 GB
+	deleted, err := m.PruneByTotalSize(tempDir, maxBytes, false)
+	if err != nil {
+		t.Fatalf("PruneByTotalSize failed: %v", err)
+	}
+
+	for _, f := range deleted {
+		if f == "real.zip" {
+			t.Fatalf("real.zip must never be deleted: phantom entries recorded 300 GB but on-disk usage is 4 KB, well under the 50 GB cap; deleted = %v", deleted)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, "real.zip")); err != nil {
+		t.Errorf("real.zip should still exist on disk after pruning: %v", err)
+	}
+
+	foundReal := false
+	for _, e := range m.Backups {
+		if e.File == "real.zip" {
+			foundReal = true
+		}
+	}
+	if !foundReal {
+		t.Error("real.zip must still be present in the manifest after pruning")
+	}
+}
+
+// TestPruneWithOptionsPhantomEntriesNeverDeleteRealFile exercises one real
+// 4 KB zip (the oldest entry) plus four newer "phantom" entries whose zips
+// are already gone, under keep_last 5. A sixth entry (a newly written real
+// backup) represents the backup just completed by this run, so the
+// manifest has 6 entries against keep_last 5. Before this behavior was
+// fixed, len(m.Backups) counted the phantom entries as if they were real,
+// so PruneWithOptions treated the count as 6-over-5 and evicted the
+// oldest entry, the one real older backup, leaving only two real backups
+// on disk. A fixture with exactly 5 entries against keep_last 5 would
+// never even attempt a prune (len(m.Backups) <= keepLast short-circuits),
+// so the sixth entry is required to actually exercise the old bug.
+// Phantom entries must never occupy a keep slot or be picked as a
+// removal candidate.
+func TestPruneWithOptionsPhantomEntriesNeverDeleteRealFile(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	projectDir := filepath.Join(tempDir, "test-project")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+
+	// Backups are ordered oldest to newest. The real zip is the OLDEST
+	// entry: a project whose old real backup predates four later runs
+	// that got pruned (or hand-deleted)
+	// without their manifest entries ever being cleaned up. newest.zip is
+	// the backup just written by this run, giving 6 total entries against
+	// keep_last 5.
+	entries := []BackupEntry{
+		{File: "real.zip"},
+		{File: "phantom-1.zip"},
+		{File: "phantom-2.zip"},
+		{File: "phantom-3.zip"},
+		{File: "phantom-4.zip"},
+		{File: "newest.zip"},
+	}
+
+	if err := os.WriteFile(filepath.Join(projectDir, "real.zip"), []byte("dummy"), 0644); err != nil {
+		t.Fatalf("Failed to create real.zip: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "newest.zip"), []byte("dummy"), 0644); err != nil {
+		t.Fatalf("Failed to create newest.zip: %v", err)
+	}
+	// phantom-1..4.zip are deliberately never created.
+
+	m := &Manifest{Project: "test-project", Backups: entries}
+
+	deleted, err := m.PruneWithOptions(tempDir, 5, false)
+	if err != nil {
+		t.Fatalf("PruneWithOptions failed: %v", err)
+	}
+
+	for _, f := range deleted {
+		if f == "real.zip" {
+			t.Fatalf("real.zip must never be deleted: only two real backups exist, well under keep_last 5; deleted = %v", deleted)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, "real.zip")); err != nil {
+		t.Errorf("real.zip should still exist on disk after pruning: %v", err)
+	}
+
+	foundReal := false
+	for _, e := range m.Backups {
+		if e.File == "real.zip" {
+			foundReal = true
+		}
+	}
+	if !foundReal {
+		t.Error("real.zip must still be present in the manifest after pruning")
 	}
 }

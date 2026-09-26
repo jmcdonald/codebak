@@ -127,6 +127,8 @@ type mockLaunchdService struct {
 	statusErr   error
 	plistPath   string
 	logPath     string
+	rotated     bool
+	rotateErr   error
 }
 
 func newMockLaunchdService() *mockLaunchdService {
@@ -166,6 +168,10 @@ func (m *mockLaunchdService) PlistPath() string {
 
 func (m *mockLaunchdService) LogPath() string {
 	return m.logPath
+}
+
+func (m *mockLaunchdService) RotateLog() (bool, error) {
+	return m.rotated, m.rotateErr
 }
 
 // ============================================================================

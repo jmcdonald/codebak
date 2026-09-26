@@ -45,6 +45,9 @@ type LaunchdService interface {
 	Status() (bool, error)
 	PlistPath() string
 	LogPath() string
+	// RotateLog caps the launchd-redirected log file, rotating it if it has
+	// grown past the size cap. Returns true if rotation happened.
+	RotateLog() (bool, error)
 }
 
 // CLI represents the command-line interface with injectable dependencies.
@@ -145,6 +148,7 @@ func (d *defaultLaunchdService) Uninstall() error             { return launchd.U
 func (d *defaultLaunchdService) Status() (bool, error)        { return launchd.Status() }
 func (d *defaultLaunchdService) PlistPath() string            { return launchd.PlistPath() }
 func (d *defaultLaunchdService) LogPath() string              { return launchd.LogPath() }
+func (d *defaultLaunchdService) RotateLog() (bool, error)     { return launchd.RotateLog() }
 
 // Helper methods to get the service or default
 func (c *CLI) configSvc() ConfigService {
@@ -220,7 +224,8 @@ func (c *CLI) PrintUsage() {
 Usage:
   codebak                                  Launch interactive TUI
   codebak ui                               Launch interactive TUI
-  codebak run [project]                    Backup all changed projects (or specific project)
+  codebak run [project] [--dry-run]        Backup all changed projects (or specific project)
+                                           --dry-run previews without writing or deleting anything
   codebak list <project>                   List all backup versions for a project
   codebak verify <project> [version]       Verify backup integrity
   codebak recover <project> [--wipe|--archive] [--version=YYYYMMDD-HHMMSS]
@@ -259,6 +264,22 @@ func (c *CLI) InitConfig() {
 	fmt.Fprintf(c.Out, "Created config at %s\n", path)
 }
 
+// parseRunArgs splits the arguments after "run" into an optional project
+// name and a dryRun flag. "--dry-run" may appear anywhere in the argument
+// list and is never treated as a project name.
+func parseRunArgs(args []string) (project string, dryRun bool) {
+	for _, arg := range args {
+		if arg == "--dry-run" {
+			dryRun = true
+			continue
+		}
+		if project == "" {
+			project = arg
+		}
+	}
+	return project, dryRun
+}
+
 // RunBackup runs the backup command.
 func (c *CLI) RunBackup() {
 	cfgSvc := c.configSvc()
@@ -271,6 +292,20 @@ func (c *CLI) RunBackup() {
 		return
 	}
 
+	var project string
+	if len(c.Args) > 2 {
+		project, cfg.DryRun = parseRunArgs(c.Args[2:])
+	}
+
+	// Cap the launchd-redirected log before writing more to it.
+	if rotated, err := c.launchdSvc().RotateLog(); err == nil && rotated {
+		fmt.Fprintf(c.Out, "%s Rotated codebak.log (exceeded size cap)\n", c.gray("-"))
+	}
+
+	if cfg.DryRun {
+		fmt.Fprintf(c.Out, "%s DRY RUN: no files will be written or deleted\n", c.yellow("!"))
+	}
+
 	sources := cfg.GetSources()
 	if len(sources) == 1 {
 		fmt.Fprintf(c.Out, "%s Scanning %s...\n", c.cyan("=>"), sources[0].Path)
@@ -279,8 +314,7 @@ func (c *CLI) RunBackup() {
 	}
 
 	var results []backup.BackupResult
-	if len(c.Args) > 2 {
-		project := c.Args[2]
+	if project != "" {
 		result := backupSvc.BackupProject(cfg, project)
 		results = []backup.BackupResult{result}
 	} else {
@@ -295,6 +329,7 @@ func (c *CLI) RunBackup() {
 	backedUp := 0
 	skipped := 0
 	errors := 0
+	prunedTotal := 0
 
 	fmt.Fprintln(c.Out)
 	for _, r := range results {
@@ -314,12 +349,26 @@ func (c *CLI) RunBackup() {
 				r.FileCount)
 			backedUp++
 		}
+
+		// Log exactly what retention deleted (or, in dry-run, would
+		// delete). This is the only place these deletions are logged.
+		for _, pruned := range r.Pruned {
+			verb := "deleted"
+			if r.DryRun {
+				verb = "would delete"
+			}
+			fmt.Fprintf(c.Out, "    %s %s %s/%s\n", c.gray("-"), c.gray(verb), r.Project, pruned)
+			prunedTotal++
+		}
 	}
 
 	fmt.Fprintln(c.Out)
 	fmt.Fprintf(c.Out, "Done: %s backed up, %s skipped",
 		c.green(fmt.Sprintf("%d", backedUp)),
 		c.gray(fmt.Sprintf("%d", skipped)))
+	if prunedTotal > 0 {
+		fmt.Fprintf(c.Out, ", %s pruned", c.gray(fmt.Sprintf("%d", prunedTotal)))
+	}
 	if errors > 0 {
 		fmt.Fprintf(c.Out, ", %s errors", c.red(fmt.Sprintf("%d", errors)))
 	}

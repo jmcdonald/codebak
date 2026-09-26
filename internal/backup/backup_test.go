@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1246,5 +1247,443 @@ func TestRunBackupSensitiveSourcesOnly(t *testing.T) {
 		if r.SourceType != config.SourceTypeSensitive {
 			t.Errorf("Expected SourceType sensitive, got %q", r.SourceType)
 		}
+	}
+}
+
+// ============================================================================
+// Retention safety tests: excluded projects, minimum interval between runs,
+// per-project retention overrides, the total-size cap, and dry-run mode.
+// ============================================================================
+
+// lowFreeSpaceFS wraps the real OS filesystem but reports a fixed, tiny
+// amount of free space, so the disk-space precheck can be exercised
+// against real files without needing to fill up an actual disk.
+type lowFreeSpaceFS struct {
+	*osfs.OSFileSystem
+	free uint64
+}
+
+func (l *lowFreeSpaceFS) FreeSpace(path string) (uint64, error) {
+	return l.free, nil
+}
+
+func TestBackupProjectExcludedProjectSkipped(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(sourceDir, "excluded-project")
+
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	cfg := &config.Config{
+		SourceDir:        sourceDir,
+		BackupDir:        backupDir,
+		ExcludedProjects: []string{"excluded-project"},
+	}
+
+	result := BackupProject(cfg, "excluded-project")
+	if result.Error != nil {
+		t.Fatalf("excluded project should not error: %v", result.Error)
+	}
+	if !result.Skipped {
+		t.Fatal("expected excluded project to be skipped")
+	}
+	if result.Reason != "excluded" {
+		t.Errorf("Reason = %q, expected %q", result.Reason, "excluded")
+	}
+
+	// Zero zip written: excluding happens before any backup dir is touched.
+	if _, err := os.Stat(filepath.Join(backupDir, "excluded-project")); !os.IsNotExist(err) {
+		t.Error("excluded project must not create any backup dir/zip")
+	}
+}
+
+func TestBackupProjectMinIntervalBlocksSecondRun(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(sourceDir, "test-project")
+
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	cfg := &config.Config{
+		SourceDir:        sourceDir,
+		BackupDir:        backupDir,
+		MinIntervalHours: 24,
+	}
+
+	result1 := BackupProject(cfg, "test-project")
+	if result1.Error != nil {
+		t.Fatalf("First backup failed: %v", result1.Error)
+	}
+	if result1.Skipped {
+		t.Fatal("first backup should not be skipped")
+	}
+
+	result2 := BackupProject(cfg, "test-project")
+	if result2.Error != nil {
+		t.Fatalf("Second backup call failed: %v", result2.Error)
+	}
+	if !result2.Skipped {
+		t.Error("second run within min_interval_hours should be skipped")
+	}
+	if !strings.Contains(result2.Reason, "min-interval") {
+		t.Errorf("Reason = %q, expected to contain %q", result2.Reason, "min-interval")
+	}
+
+	// No second zip written.
+	entries, err := os.ReadDir(filepath.Join(backupDir, "test-project"))
+	if err != nil {
+		t.Fatalf("Failed to read backup dir: %v", err)
+	}
+	zipCount := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".zip") {
+			zipCount++
+		}
+	}
+	if zipCount != 1 {
+		t.Errorf("zip count = %d, expected 1 (no second zip written)", zipCount)
+	}
+}
+
+func TestBackupProjectRetentionOverrideBeatsDefault(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(sourceDir, "test-project")
+	projectBackupDir := filepath.Join(backupDir, "test-project")
+
+	if err := os.MkdirAll(projectBackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create project backup dir: %v", err)
+	}
+
+	// Pre-populate 3 existing backups, older than the new one we're about
+	// to trigger. The global default (10) would keep all of them; the
+	// per-project override (2) must win instead.
+	oldTime := time.Now().Add(-72 * time.Hour)
+	var entries []manifest.BackupEntry
+	for i, name := range []string{"a.zip", "b.zip", "c.zip"} {
+		if err := os.WriteFile(filepath.Join(projectBackupDir, name), []byte("dummy"), 0644); err != nil {
+			t.Fatalf("Failed to write dummy zip %s: %v", name, err)
+		}
+		entries = append(entries, manifest.BackupEntry{
+			File:      name,
+			SizeBytes: 5,
+			CreatedAt: oldTime.Add(time.Duration(i) * time.Hour),
+		})
+	}
+	m := &manifest.Manifest{Project: "test-project", Source: projectDir, Backups: entries}
+	if err := m.Save(backupDir); err != nil {
+		t.Fatalf("Failed to save seed manifest: %v", err)
+	}
+
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: backupDir,
+		Retention: struct {
+			KeepLast int `yaml:"keep_last"`
+		}{KeepLast: 10},
+		RetentionOverrides: map[string]int{"test-project": 2},
+	}
+
+	result := BackupProject(cfg, "test-project")
+	if result.Error != nil {
+		t.Fatalf("BackupProject failed: %v", result.Error)
+	}
+	if result.Skipped {
+		t.Fatalf("expected a new backup to be taken, got skipped: %s", result.Reason)
+	}
+
+	loaded, err := manifest.Load(backupDir, "test-project")
+	if err != nil {
+		t.Fatalf("Failed to reload manifest: %v", err)
+	}
+	if len(loaded.Backups) != 2 {
+		t.Errorf("Backups remaining = %d, expected 2 (override beats default 10)", len(loaded.Backups))
+	}
+	if len(result.Pruned) != 2 {
+		t.Errorf("Pruned count = %d, expected 2", len(result.Pruned))
+	}
+	for _, f := range []string{"a.zip", "b.zip"} {
+		if _, err := os.Stat(filepath.Join(projectBackupDir, f)); err == nil {
+			t.Errorf("%s should have been pruned by the override, but still exists", f)
+		}
+	}
+}
+
+func TestBackupProjectMaxTotalGBCapRemovesOldestNeverNewest(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(sourceDir, "test-project")
+	projectBackupDir := filepath.Join(backupDir, "test-project")
+
+	if err := os.MkdirAll(projectBackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create project backup dir: %v", err)
+	}
+
+	// Three pre-existing backups, 300 bytes on disk each (900 bytes
+	// total), well over a 700-byte cap. A high count-based keep_last means
+	// only the size cap should drive pruning here. The recorded SizeBytes
+	// is deliberately left tiny and wrong: the cap must be driven by the
+	// real on-disk size, never the manifest's recorded figure.
+	oldTime := time.Now().Add(-72 * time.Hour)
+	var entries []manifest.BackupEntry
+	dummyContent := make([]byte, 300)
+	for i, name := range []string{"oldest.zip", "middle.zip", "newest-existing.zip"} {
+		if err := os.WriteFile(filepath.Join(projectBackupDir, name), dummyContent, 0644); err != nil {
+			t.Fatalf("Failed to write dummy zip %s: %v", name, err)
+		}
+		entries = append(entries, manifest.BackupEntry{
+			File:      name,
+			SizeBytes: 1,
+			CreatedAt: oldTime.Add(time.Duration(i) * time.Hour),
+		})
+	}
+	m := &manifest.Manifest{Project: "test-project", Source: projectDir, Backups: entries}
+	if err := m.Save(backupDir); err != nil {
+		t.Fatalf("Failed to save seed manifest: %v", err)
+	}
+
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: backupDir,
+		Retention: struct {
+			KeepLast int `yaml:"keep_last"`
+		}{KeepLast: 100}, // effectively disabled for this test
+		MaxTotalGBPerProject: 700.0 / (1024 * 1024 * 1024),
+	}
+
+	result := BackupProject(cfg, "test-project")
+	if result.Error != nil {
+		t.Fatalf("BackupProject failed: %v", result.Error)
+	}
+	if result.Skipped {
+		t.Fatalf("expected a new backup to be taken, got skipped: %s", result.Reason)
+	}
+
+	if len(result.Pruned) == 0 {
+		t.Fatal("expected the size cap to prune at least the oldest backup")
+	}
+	for _, f := range result.Pruned {
+		if f == "newest-existing.zip" || f == result.ZipPath {
+			t.Errorf("the newest backup must never be pruned by the size cap, but %s was", f)
+		}
+	}
+	if result.Pruned[0] != "oldest.zip" {
+		t.Errorf("first pruned entry = %q, expected the oldest backup to go first", result.Pruned[0])
+	}
+	if _, err := os.Stat(filepath.Join(projectBackupDir, "oldest.zip")); err == nil {
+		t.Error("oldest.zip should have been deleted by the size cap")
+	}
+	if _, err := os.Stat(filepath.Join(projectBackupDir, "newest-existing.zip")); err != nil {
+		t.Error("newest-existing.zip must still exist, never pruned")
+	}
+}
+
+func TestBackupProjectDiskPrecheckRefusesBelowFloor(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(sourceDir, "test-project")
+
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte(strings.Repeat("x", 4096)), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	fs := &lowFreeSpaceFS{OSFileSystem: osfs.New(), free: 10} // far below 2x source size
+	svc := NewService(fs, execgit.New(), ziparchiver.New(), mocks.NewMockResticClient())
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: backupDir,
+	}
+
+	result := svc.BackupProject(cfg, "test-project")
+	if result.Error != nil {
+		t.Fatalf("disk precheck should skip cleanly, not error: %v", result.Error)
+	}
+	if !result.Skipped {
+		t.Fatal("expected the disk-space precheck to skip the backup")
+	}
+	if !strings.Contains(result.Reason, "disk-space") {
+		t.Errorf("Reason = %q, expected to contain %q", result.Reason, "disk-space")
+	}
+
+	// No zip: the precheck happens before any output file is opened.
+	if entries, err := os.ReadDir(filepath.Join(backupDir, "test-project")); err == nil {
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".zip") {
+				t.Errorf("no zip should have been written below the disk-space floor, found %s", e.Name())
+			}
+		}
+	}
+}
+
+func TestBackupProjectDryRunWritesNothing(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(sourceDir, "test-project")
+
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: backupDir,
+		DryRun:    true,
+	}
+
+	result := BackupProject(cfg, "test-project")
+	if result.Error != nil {
+		t.Fatalf("BackupProject dry-run failed: %v", result.Error)
+	}
+	if result.Skipped {
+		t.Fatalf("a changed project under dry-run should not be marked skipped: %s", result.Reason)
+	}
+	if !result.DryRun {
+		t.Error("result.DryRun should be true")
+	}
+
+	// Dry-run must not write a manifest, a zip, or even the backup dir.
+	if entries, err := os.ReadDir(filepath.Join(backupDir, "test-project")); err == nil {
+		if len(entries) != 0 {
+			t.Errorf("dry-run must not write anything to disk, found %d entries", len(entries))
+		}
+	}
+}
+
+func TestBackupProjectDryRunPreviewsPruneWithoutDeleting(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	backupDir := filepath.Join(tempDir, "backups")
+	projectDir := filepath.Join(sourceDir, "test-project")
+	projectBackupDir := filepath.Join(backupDir, "test-project")
+
+	if err := os.MkdirAll(projectBackupDir, 0755); err != nil {
+		t.Fatalf("Failed to create project backup dir: %v", err)
+	}
+
+	oldTime := time.Now().Add(-72 * time.Hour)
+	var entries []manifest.BackupEntry
+	for i, name := range []string{"a.zip", "b.zip", "c.zip"} {
+		if err := os.WriteFile(filepath.Join(projectBackupDir, name), []byte("dummy"), 0644); err != nil {
+			t.Fatalf("Failed to write dummy zip %s: %v", name, err)
+		}
+		entries = append(entries, manifest.BackupEntry{
+			File:      name,
+			SizeBytes: 5,
+			CreatedAt: oldTime.Add(time.Duration(i) * time.Hour),
+		})
+	}
+	m := &manifest.Manifest{Project: "test-project", Source: projectDir, Backups: entries}
+	if err := m.Save(backupDir); err != nil {
+		t.Fatalf("Failed to save seed manifest: %v", err)
+	}
+
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatalf("Failed to create project dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "main.go"), []byte("package main"), 0644); err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	cfg := &config.Config{
+		SourceDir: sourceDir,
+		BackupDir: backupDir,
+		Retention: struct {
+			KeepLast int `yaml:"keep_last"`
+		}{KeepLast: 1},
+		DryRun: true,
+	}
+
+	result := BackupProject(cfg, "test-project")
+	if result.Error != nil {
+		t.Fatalf("BackupProject dry-run failed: %v", result.Error)
+	}
+	if len(result.Pruned) == 0 {
+		t.Error("dry-run should report what retention would prune")
+	}
+
+	for _, name := range []string{"a.zip", "b.zip", "c.zip"} {
+		if _, err := os.Stat(filepath.Join(projectBackupDir, name)); err != nil {
+			t.Errorf("dry-run must not delete %s: %v", name, err)
+		}
+	}
+
+	reloaded, err := manifest.Load(backupDir, "test-project")
+	if err != nil {
+		t.Fatalf("Failed to reload manifest: %v", err)
+	}
+	if len(reloaded.Backups) != 3 {
+		t.Errorf("on-disk manifest must be untouched by dry-run, got %d backups, expected 3", len(reloaded.Backups))
 	}
 }

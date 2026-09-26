@@ -28,6 +28,13 @@ type BackupResult struct {
 	Reason     string
 	Error      error
 	SourceType config.SourceType // git or sensitive
+	// Pruned lists backup files deleted by retention (count-based or
+	// total-size-based). When DryRun is true, these were NOT deleted; they
+	// are what a real run would delete.
+	Pruned []string
+	// DryRun mirrors config.Config.DryRun for this result: true means no
+	// files were written or deleted, everything above is a preview.
+	DryRun bool
 }
 
 // ZipResult contains results from createZip including any skipped files.
@@ -147,9 +154,71 @@ func shouldExclude(path string, excludePatterns []string) bool {
 	return false
 }
 
+// isExcludedProject reports whether project is in the excluded_projects list.
+func isExcludedProject(project string, excludedProjects []string) bool {
+	for _, excluded := range excludedProjects {
+		if excluded == project {
+			return true
+		}
+	}
+	return false
+}
+
+// minIntervalReason returns a non-empty skip reason if last is recent enough
+// that minIntervalHours has not yet elapsed. Returns "" if the
+// project should proceed.
+func minIntervalReason(minIntervalHours float64, last *manifest.BackupEntry) string {
+	if minIntervalHours <= 0 || last == nil {
+		return ""
+	}
+	minInterval := time.Duration(minIntervalHours * float64(time.Hour))
+	elapsed := time.Since(last.CreatedAt)
+	if elapsed < minInterval {
+		return fmt.Sprintf("min-interval (%gh, last run %s ago)", minIntervalHours, elapsed.Round(time.Second))
+	}
+	return ""
+}
+
+// dirSize sums the size in bytes of every regular file under root.
+func dirSize(fsys ports.FileSystem, root string) int64 {
+	var total int64
+	_ = fsys.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	return total
+}
+
+// diskSpaceReason returns a non-empty skip reason if the backup destination
+// does not have at least 2x sourceSize bytes free. Returns "" if
+// there is enough room, or if free space could not be determined (fails
+// open: a precheck we can't evaluate should not block a backup).
+func diskSpaceReason(fsys ports.FileSystem, backupDir string, sourceSize int64) string {
+	free, err := fsys.FreeSpace(backupDir)
+	if err != nil {
+		return ""
+	}
+	needed := uint64(2 * sourceSize) // #nosec G115 -- sourceSize is a non-negative file-size sum
+	if free < needed {
+		return fmt.Sprintf("disk-space (%s free, need %s)", FormatSize(int64(free)), FormatSize(int64(needed)))
+	}
+	return ""
+}
+
 // BackupProject creates a zip backup of a single project.
 func (s *Service) BackupProject(cfg *config.Config, project string) BackupResult {
-	result := BackupResult{Project: project}
+	result := BackupResult{Project: project, DryRun: cfg.DryRun}
+
+	// excluded_projects skips the project entirely, before anything else
+	// is touched.
+	if isExcludedProject(project, cfg.ExcludedProjects) {
+		result.Skipped = true
+		result.Reason = "excluded"
+		return result
+	}
 
 	backupDir, err := config.ExpandPath(cfg.BackupDir)
 	if err != nil {
@@ -185,6 +254,13 @@ func (s *Service) BackupProject(cfg *config.Config, project string) BackupResult
 	}
 	m.Source = projectPath
 
+	// min_interval_hours debounces repeated runs.
+	if reason := minIntervalReason(cfg.MinIntervalHours, m.LatestBackup()); reason != "" {
+		result.Skipped = true
+		result.Reason = reason
+		return result
+	}
+
 	// Check for changes
 	hasChanges, reason := s.HasChanges(projectPath, m.LatestBackup())
 	if !hasChanges {
@@ -193,55 +269,99 @@ func (s *Service) BackupProject(cfg *config.Config, project string) BackupResult
 		return result
 	}
 
-	// Create backup directory
-	projectBackupDir := filepath.Join(backupDir, project)
-	if err := s.fs.MkdirAll(projectBackupDir, 0755); err != nil {
-		result.Error = fmt.Errorf("creating backup dir: %w", err)
+	// Disk-space precheck. Evaluated before opening any output file so a
+	// near-full disk never gets a partial zip.
+	sourceSize := dirSize(s.fs, projectPath)
+	if reason := diskSpaceReason(s.fs, backupDir, sourceSize); reason != "" {
+		result.Skipped = true
+		result.Reason = reason
 		return result
 	}
 
 	// Generate zip filename
 	timestamp := time.Now().Format("20060102-150405")
 	zipName := fmt.Sprintf("%s.zip", timestamp)
+	projectBackupDir := filepath.Join(backupDir, project)
 	zipPath := filepath.Join(projectBackupDir, zipName)
 
-	// Create zip file using archiver
-	fileCount, err := s.archiver.Create(zipPath, projectPath, cfg.Exclude)
-	if err != nil {
-		result.Error = fmt.Errorf("creating zip: %w", err)
-		return result
-	}
+	var entry manifest.BackupEntry
 
-	// Get zip file info
-	zipInfo, err := s.fs.Stat(zipPath)
-	if err != nil {
-		result.Error = fmt.Errorf("stat zip: %w", err)
-		return result
-	}
+	if cfg.DryRun {
+		// Dry run: no zip is written, no manifest is saved. Report what
+		// would happen using the on-disk source size as an estimate.
+		result.ZipPath = zipPath
+		result.Size = sourceSize
+		result.GitHead = s.git.GetHead(projectPath)
+		result.Reason = "(dry-run) would back up: " + reason
+		entry = manifest.BackupEntry{
+			File:      zipName,
+			SizeBytes: sourceSize,
+			CreatedAt: time.Now(),
+			GitHead:   result.GitHead,
+		}
+	} else {
+		// Create backup directory
+		if err := s.fs.MkdirAll(projectBackupDir, 0755); err != nil {
+			result.Error = fmt.Errorf("creating backup dir: %w", err)
+			return result
+		}
 
-	// Compute checksum
-	checksum, err := manifest.ComputeSHA256(zipPath)
-	if err != nil {
-		result.Error = fmt.Errorf("computing checksum: %w", err)
-		return result
-	}
+		// Create zip file using archiver
+		fileCount, err := s.archiver.Create(zipPath, projectPath, cfg.Exclude)
+		if err != nil {
+			result.Error = fmt.Errorf("creating zip: %w", err)
+			return result
+		}
 
-	// Create manifest entry
-	entry := manifest.BackupEntry{
-		File:      zipName,
-		SHA256:    checksum,
-		SizeBytes: zipInfo.Size(),
-		CreatedAt: time.Now(),
-		GitHead:   s.git.GetHead(projectPath),
-		FileCount: fileCount,
-		Excluded:  cfg.Exclude,
+		// Get zip file info
+		zipInfo, err := s.fs.Stat(zipPath)
+		if err != nil {
+			result.Error = fmt.Errorf("stat zip: %w", err)
+			return result
+		}
+
+		// Compute checksum
+		checksum, err := manifest.ComputeSHA256(zipPath)
+		if err != nil {
+			result.Error = fmt.Errorf("computing checksum: %w", err)
+			return result
+		}
+
+		entry = manifest.BackupEntry{
+			File:      zipName,
+			SHA256:    checksum,
+			SizeBytes: zipInfo.Size(),
+			CreatedAt: time.Now(),
+			GitHead:   s.git.GetHead(projectPath),
+			FileCount: fileCount,
+			Excluded:  cfg.Exclude,
+		}
+
+		result.ZipPath = zipPath
+		result.Size = zipInfo.Size()
+		result.FileCount = fileCount
+		result.GitHead = entry.GitHead
+		result.Reason = reason
 	}
 
 	m.AddBackup(entry)
 
-	// Prune old backups if retention is configured
-	if cfg.Retention.KeepLast > 0 {
-		_, _ = m.Prune(backupDir, cfg.Retention.KeepLast)
+	// Count-based and total-size-based retention, whichever is stricter
+	// wins. Both log exactly what they delete (or would delete, in
+	// dry-run) via the returned file lists on BackupResult.
+	keepLast := cfg.EffectiveKeepLast(project)
+	if keepLast > 0 {
+		prunedByCount, _ := m.PruneWithOptions(backupDir, keepLast, cfg.DryRun)
+		result.Pruned = append(result.Pruned, prunedByCount...)
+	}
+	if maxBytes := cfg.MaxTotalBytesPerProject(); maxBytes > 0 {
+		prunedBySize, _ := m.PruneByTotalSize(backupDir, maxBytes, cfg.DryRun)
+		result.Pruned = append(result.Pruned, prunedBySize...)
+	}
+
+	if cfg.DryRun {
+		// Nothing was written; do not persist the hypothetical manifest.
+		return result
 	}
 
 	// Save manifest
@@ -249,12 +369,6 @@ func (s *Service) BackupProject(cfg *config.Config, project string) BackupResult
 		result.Error = fmt.Errorf("saving manifest: %w", err)
 		return result
 	}
-
-	result.ZipPath = zipPath
-	result.Size = zipInfo.Size()
-	result.FileCount = fileCount
-	result.GitHead = entry.GitHead
-	result.Reason = reason
 
 	return result
 }
