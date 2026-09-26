@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/jmcdonald/codebak/internal/ports"
 )
@@ -72,6 +73,28 @@ func (f *OSFileSystem) Walk(root string, fn ports.WalkFunc) error {
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		return fn(path, info, err)
 	})
+}
+
+// FreeSpace returns the number of free bytes available on the filesystem
+// containing path, via statfs(2). If path does not exist, the nearest
+// existing ancestor directory is used instead.
+func (f *OSFileSystem) FreeSpace(path string) (uint64, error) {
+	lookupPath := path
+	for {
+		var stat syscall.Statfs_t
+		err := syscall.Statfs(lookupPath, &stat)
+		if err == nil {
+			return stat.Bavail * uint64(stat.Bsize), nil
+		}
+		if !os.IsNotExist(err) {
+			return 0, err
+		}
+		parent := filepath.Dir(lookupPath)
+		if parent == lookupPath {
+			return 0, err
+		}
+		lookupPath = parent
+	}
 }
 
 // Compile-time check that OSFileSystem implements ports.FileSystem.

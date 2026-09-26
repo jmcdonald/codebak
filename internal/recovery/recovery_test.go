@@ -775,6 +775,7 @@ func (m *mockTestFS) Rename(oldpath, newpath string) error                      
 func (m *mockTestFS) Open(name string) (fs.File, error)                          { return nil, nil }
 func (m *mockTestFS) Create(name string) (*os.File, error)                       { return nil, nil }
 func (m *mockTestFS) Walk(root string, fn ports.WalkFunc) error                  { return nil }
+func (m *mockTestFS) FreeSpace(path string) (uint64, error)                      { return 1 << 60, nil }
 
 // mockTestArchiver is a minimal mock for testing
 type mockTestArchiver struct{}

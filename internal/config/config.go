@@ -75,6 +75,88 @@ type Config struct {
 	} `yaml:"retention"`
 	// Restic configuration for sensitive path backups
 	Restic ResticConfig `yaml:"restic,omitempty"`
+
+	// ExcludedProjects lists project names (basename of the repo directory)
+	// to skip entirely. Unlike Exclude (a glob applied to paths inside a
+	// project while zipping), this stops the project from being backed up
+	// at all.
+	ExcludedProjects []string `yaml:"excluded_projects,omitempty"`
+
+	// MinIntervalHours is the minimum number of hours that must pass since a
+	// project's last backup before it will be backed up again. Zero or
+	// negative disables the check.
+	MinIntervalHours float64 `yaml:"min_interval_hours,omitempty"`
+
+	// RetentionOverrides maps a project name to a per-project keep_last
+	// value, overriding Retention.KeepLast for that project only.
+	RetentionOverrides map[string]int `yaml:"retention_overrides,omitempty"`
+
+	// MaxTotalGBPerProject caps the total on-disk size (in GB) of a single
+	// project's backup zips. After a backup, the oldest zips are pruned
+	// until the project is at or under this cap, in addition to (whichever
+	// is stricter than) Retention.KeepLast. Zero or negative disables the
+	// check.
+	MaxTotalGBPerProject float64 `yaml:"max_total_gb_per_project,omitempty"`
+
+	// DryRun is a runtime-only flag, set from the CLI (e.g. `codebak run
+	// --dry-run`). It is never persisted to config.yaml. When true, no zip
+	// is written, no manifest is saved, and no backup file is deleted;
+	// BackupResult reports what would have happened instead.
+	DryRun bool `yaml:"-"`
+}
+
+// Retention and safety-limit defaults.
+const (
+	// LegacyDefaultKeepLast is the keep_last value codebak used before the
+	// per-project size cap and safety limits existed. Preserved so a config
+	// file written before those limits existed, and that does not
+	// explicitly set retention.keep_last, keeps its historical behavior
+	// instead of silently adopting the new, much lower default. See
+	// Load() for how this is applied.
+	LegacyDefaultKeepLast = 30
+
+	// DefaultKeepLast is the safer default used for brand-new configs
+	// (fresh `codebak init`, or Load() when no config file exists yet).
+	DefaultKeepLast = 5
+
+	// DefaultMinIntervalHours is the default debounce window between
+	// backups of the same project.
+	DefaultMinIntervalHours = 12
+
+	// DefaultMaxTotalGBPerProject is the default per-project on-disk size
+	// cap, in GB.
+	DefaultMaxTotalGBPerProject = 50
+)
+
+// MaxTotalBytesPerProject returns MaxTotalGBPerProject converted to bytes.
+// Returns 0 if the cap is disabled (MaxTotalGBPerProject <= 0).
+func (c *Config) MaxTotalBytesPerProject() int64 {
+	if c.MaxTotalGBPerProject <= 0 {
+		return 0
+	}
+	return int64(c.MaxTotalGBPerProject * 1024 * 1024 * 1024)
+}
+
+// EffectiveKeepLast returns the keep_last value that applies to project,
+// honoring RetentionOverrides when present.
+func (c *Config) EffectiveKeepLast(project string) int {
+	if c.RetentionOverrides != nil {
+		if override, ok := c.RetentionOverrides[project]; ok {
+			return override
+		}
+	}
+	return c.Retention.KeepLast
+}
+
+// IsExcludedProject reports whether project is listed in ExcludedProjects.
+// Matching is an exact match on the project (directory) name.
+func (c *Config) IsExcludedProject(project string) bool {
+	for _, excluded := range c.ExcludedProjects {
+		if excluded == project {
+			return true
+		}
+	}
+	return false
 }
 
 // GetSources returns all sources, migrating from SourceDir if needed
@@ -196,7 +278,9 @@ func DefaultConfig() (*Config, error) {
 		},
 		Retention: struct {
 			KeepLast int `yaml:"keep_last"`
-		}{KeepLast: 30},
+		}{KeepLast: DefaultKeepLast},
+		MinIntervalHours:     DefaultMinIntervalHours,
+		MaxTotalGBPerProject: DefaultMaxTotalGBPerProject,
 	}, nil
 }
 
@@ -222,9 +306,35 @@ func Load() (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cfg, nil // Use defaults
+			return cfg, nil // No config file yet: use the new, safer defaults.
 		}
 		return nil, err
+	}
+
+	// An existing config file was found. If it does not explicitly set
+	// retention.keep_last, preserve the historical default (30) rather than
+	// silently dropping to the new lower default (5): the lower default
+	// applies to new configs, but must not change behavior for a config
+	// the user already had in place. The user opts into the new
+	// default by leaving keep_last unset in a freshly generated config, or
+	// opts into any value at all by setting retention.keep_last explicitly
+	// (which always wins, at any value, old or new).
+	if !hasExplicitKeepLast(data) {
+		cfg.Retention.KeepLast = LegacyDefaultKeepLast
+	}
+
+	// Same rule for the two newer safety limits added alongside the lower
+	// keep_last default: min_interval_hours and max_total_gb_per_project.
+	// Both ship with non-zero defaults for a brand-new config, but an
+	// existing config that has never heard of these keys must keep
+	// behaving exactly as it does today, not silently start debouncing
+	// runs or pruning by size.
+	// Absent means off (0); present at any value, including 0, always wins.
+	if !hasExplicitMinIntervalHours(data) {
+		cfg.MinIntervalHours = 0
+	}
+	if !hasExplicitMaxTotalGBPerProject(data) {
+		cfg.MaxTotalGBPerProject = 0
 	}
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
@@ -232,6 +342,47 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// hasExplicitKeepLast reports whether the raw YAML config source explicitly
+// sets retention.keep_last, as opposed to that field being absent and
+// therefore defaulted.
+func hasExplicitKeepLast(data []byte) bool {
+	var raw struct {
+		Retention struct {
+			KeepLast *int `yaml:"keep_last"`
+		} `yaml:"retention"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	return raw.Retention.KeepLast != nil
+}
+
+// hasExplicitMinIntervalHours reports whether the raw YAML config source
+// explicitly sets min_interval_hours, as opposed to that field being absent
+// and therefore defaulted.
+func hasExplicitMinIntervalHours(data []byte) bool {
+	var raw struct {
+		MinIntervalHours *float64 `yaml:"min_interval_hours"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	return raw.MinIntervalHours != nil
+}
+
+// hasExplicitMaxTotalGBPerProject reports whether the raw YAML config
+// source explicitly sets max_total_gb_per_project, as opposed to that field
+// being absent and therefore defaulted.
+func hasExplicitMaxTotalGBPerProject(data []byte) bool {
+	var raw struct {
+		MaxTotalGBPerProject *float64 `yaml:"max_total_gb_per_project"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	return raw.MaxTotalGBPerProject != nil
 }
 
 func (c *Config) Save() error {

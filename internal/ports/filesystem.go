@@ -42,6 +42,11 @@ type FileSystem interface {
 
 	// Walk walks the file tree rooted at root, calling fn for each file or directory.
 	Walk(root string, fn WalkFunc) error
+
+	// FreeSpace returns the number of free bytes available on the filesystem
+	// containing path. Used for the disk-space precheck before writing a
+	// backup archive.
+	FreeSpace(path string) (uint64, error)
 }
 
 // WalkFunc is the type of function called by Walk.

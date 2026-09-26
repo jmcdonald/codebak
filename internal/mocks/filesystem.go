@@ -24,6 +24,13 @@ type MockFileSystem struct {
 	Errors map[string]error
 	// WalkEntries contains entries to return during Walk
 	WalkEntries []WalkEntry
+	// FreeBytesByPath maps a path to the free-space value FreeSpace should
+	// return for it. If a path is not present, DefaultFreeBytes is used.
+	FreeBytesByPath map[string]uint64
+	// DefaultFreeBytes is returned by FreeSpace when a path has no explicit
+	// entry in FreeBytesByPath. Defaults to a very large value so existing
+	// tests that do not care about disk space are unaffected.
+	DefaultFreeBytes uint64
 }
 
 // WalkEntry represents a file or directory entry for Walk testing.
@@ -36,11 +43,25 @@ type WalkEntry struct {
 // NewMockFileSystem creates a new mock filesystem.
 func NewMockFileSystem() *MockFileSystem {
 	return &MockFileSystem{
-		Files:  make(map[string][]byte),
-		Dirs:   make(map[string][]os.DirEntry),
-		Stats:  make(map[string]os.FileInfo),
-		Errors: make(map[string]error),
+		Files:            make(map[string][]byte),
+		Dirs:             make(map[string][]os.DirEntry),
+		Stats:            make(map[string]os.FileInfo),
+		Errors:           make(map[string]error),
+		FreeBytesByPath:  make(map[string]uint64),
+		DefaultFreeBytes: 1 << 60, // ~1 EB: effectively "plenty of space" unless overridden
 	}
+}
+
+// FreeSpace returns the configured free-space value for path, or
+// DefaultFreeBytes if none is set.
+func (m *MockFileSystem) FreeSpace(path string) (uint64, error) {
+	if err, ok := m.Errors[path]; ok {
+		return 0, err
+	}
+	if free, ok := m.FreeBytesByPath[path]; ok {
+		return free, nil
+	}
+	return m.DefaultFreeBytes, nil
 }
 
 // ReadDir reads the named directory and returns directory entries.

@@ -25,9 +25,20 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("Time = %q, expected %q", cfg.Time, "03:00")
 	}
 
-	// Check retention default
-	if cfg.Retention.KeepLast != 30 {
-		t.Errorf("Retention.KeepLast = %d, expected %d", cfg.Retention.KeepLast, 30)
+	// Check retention default. The default for brand-new configs was
+	// lowered from 30 to 5; a config file written before that change and
+	// that omits keep_last keeps the historical 30 instead (see
+	// TestLoadPreexistingConfigWithoutKeepLastPreservesLegacyDefault).
+	if cfg.Retention.KeepLast != DefaultKeepLast {
+		t.Errorf("Retention.KeepLast = %d, expected %d", cfg.Retention.KeepLast, DefaultKeepLast)
+	}
+
+	// Check new safety-limit defaults (minimum interval, size cap)
+	if cfg.MinIntervalHours != DefaultMinIntervalHours {
+		t.Errorf("MinIntervalHours = %g, expected %g", cfg.MinIntervalHours, float64(DefaultMinIntervalHours))
+	}
+	if cfg.MaxTotalGBPerProject != DefaultMaxTotalGBPerProject {
+		t.Errorf("MaxTotalGBPerProject = %g, expected %g", cfg.MaxTotalGBPerProject, float64(DefaultMaxTotalGBPerProject))
 	}
 
 	// Check default exclusions include common patterns
@@ -701,9 +712,9 @@ func TestDefaultSensitivePaths(t *testing.T) {
 func TestGetSourcesAppliesDefaults(t *testing.T) {
 	cfg := &Config{
 		Sources: []Source{
-			{Path: "/code/project1"},                          // No type, no icon
-			{Path: "/code/project2", Type: SourceTypeGit},     // Has type, no icon
-			{Path: "~/.ssh", Type: SourceTypeSensitive},       // Sensitive, no icon
+			{Path: "/code/project1"},                               // No type, no icon
+			{Path: "/code/project2", Type: SourceTypeGit},          // Has type, no icon
+			{Path: "~/.ssh", Type: SourceTypeSensitive},            // Sensitive, no icon
 			{Path: "~/.aws", Type: SourceTypeSensitive, Icon: "🔑"}, // Sensitive with custom icon
 		},
 	}
@@ -1068,5 +1079,328 @@ restic:
 
 	if cfg.Restic.PasswordEnvVar != "CUSTOM_PW_VAR" {
 		t.Errorf("Restic.PasswordEnvVar = %q, expected %q", cfg.Restic.PasswordEnvVar, "CUSTOM_PW_VAR")
+	}
+}
+
+// ============================================================================
+// Retention config tests: excluded projects, per-project overrides, the
+// size cap, and the legacy keep_last default.
+// ============================================================================
+
+func TestExcludedProjectsRoundTrip(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	configDir := filepath.Join(tempDir, ".codebak")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("Failed to create config dir: %v", err)
+	}
+
+	configContent := `
+backup_dir: /backup
+excluded_projects:
+  - demo-large-app
+  - demo-monorepo
+`
+	configPath := filepath.Join(configDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if !cfg.IsExcludedProject("demo-large-app") {
+		t.Error("expected demo-large-app to be excluded")
+	}
+	if !cfg.IsExcludedProject("demo-monorepo") {
+		t.Error("expected demo-monorepo to be excluded")
+	}
+	if cfg.IsExcludedProject("some-other-project") {
+		t.Error("did not expect some-other-project to be excluded")
+	}
+}
+
+func TestRetentionOverridesRoundTrip(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	configDir := filepath.Join(tempDir, ".codebak")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("Failed to create config dir: %v", err)
+	}
+
+	configContent := `
+backup_dir: /backup
+retention:
+  keep_last: 5
+retention_overrides:
+  demo-monorepo: 2
+`
+	configPath := filepath.Join(configDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if got := cfg.EffectiveKeepLast("demo-monorepo"); got != 2 {
+		t.Errorf("EffectiveKeepLast(demo-monorepo) = %d, expected 2 (override)", got)
+	}
+	if got := cfg.EffectiveKeepLast("some-other-project"); got != 5 {
+		t.Errorf("EffectiveKeepLast(some-other-project) = %d, expected 5 (default)", got)
+	}
+}
+
+func TestMaxTotalBytesPerProject(t *testing.T) {
+	cfg := &Config{MaxTotalGBPerProject: 50}
+	want := int64(50) * 1024 * 1024 * 1024
+	if got := cfg.MaxTotalBytesPerProject(); got != want {
+		t.Errorf("MaxTotalBytesPerProject() = %d, expected %d", got, want)
+	}
+
+	disabled := &Config{MaxTotalGBPerProject: 0}
+	if got := disabled.MaxTotalBytesPerProject(); got != 0 {
+		t.Errorf("MaxTotalBytesPerProject() with 0 GB = %d, expected 0 (disabled)", got)
+	}
+}
+
+// TestLoadPreexistingConfigWithoutKeepLastPreservesLegacyDefault is the
+// safety net for the lower keep_last default: a config file written
+// before that change, which therefore never mentions retention.keep_last,
+// must not silently drop from the old implicit default (30) to the new
+// one (5) just because the binary was upgraded.
+func TestLoadPreexistingConfigWithoutKeepLastPreservesLegacyDefault(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	configDir := filepath.Join(tempDir, ".codebak")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("Failed to create config dir: %v", err)
+	}
+
+	// A config with no "retention:" section at all, exactly like an
+	// old, hand-trimmed config file would look.
+	configContent := `
+backup_dir: /backup
+schedule: daily
+`
+	configPath := filepath.Join(configDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.Retention.KeepLast != LegacyDefaultKeepLast {
+		t.Errorf("Retention.KeepLast = %d, expected legacy default %d (existing config must not silently change)", cfg.Retention.KeepLast, LegacyDefaultKeepLast)
+	}
+}
+
+// TestLoadPreexistingConfigWithExplicitKeepLastWins confirms an explicit
+// value in an existing config always wins, whatever it is, old or new.
+func TestLoadPreexistingConfigWithExplicitKeepLastWins(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	configDir := filepath.Join(tempDir, ".codebak")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("Failed to create config dir: %v", err)
+	}
+
+	configContent := `
+backup_dir: /backup
+retention:
+  keep_last: 40
+`
+	configPath := filepath.Join(configDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.Retention.KeepLast != 40 {
+		t.Errorf("Retention.KeepLast = %d, expected explicit 40 to win", cfg.Retention.KeepLast)
+	}
+}
+
+// TestLoadFreshConfigUsesNewLowerDefault confirms a config file that does
+// NOT exist yet (fresh install) gets the new, safer default.
+func TestLoadFreshConfigUsesNewLowerDefault(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.Retention.KeepLast != DefaultKeepLast {
+		t.Errorf("Retention.KeepLast = %d, expected new default %d for a fresh install", cfg.Retention.KeepLast, DefaultKeepLast)
+	}
+}
+
+// TestLoadExistingConfigLeavesNewLimitsOff loads a config file written before
+// min_interval_hours and max_total_gb_per_project existed and asserts both
+// come back disabled (0). An existing config must keep its current behavior
+// until its owner opts in; only a fresh install gets the new defaults. An
+// explicit keep_last in the file must still win.
+func TestLoadExistingConfigLeavesNewLimitsOff(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	configDir := filepath.Join(tempDir, ".codebak")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("Failed to create config dir: %v", err)
+	}
+	existing := `source_dir: ~/code
+backup_dir: ~/.codebak/backups
+exclude:
+  - node_modules
+  - .venv
+retention:
+  keep_last: 20
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(existing), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.MinIntervalHours != 0 {
+		t.Errorf("MinIntervalHours = %v, expected 0 (off) for an existing config that never set it", cfg.MinIntervalHours)
+	}
+	if cfg.MaxTotalGBPerProject != 0 {
+		t.Errorf("MaxTotalGBPerProject = %v, expected 0 (off) for an existing config that never set it", cfg.MaxTotalGBPerProject)
+	}
+	if cfg.Retention.KeepLast != 20 {
+		t.Errorf("Retention.KeepLast = %d, expected the explicit 20 to win", cfg.Retention.KeepLast)
+	}
+}
+
+// TestLoadFreshConfigGetsNewLimitDefaults confirms a config file that does
+// NOT exist yet (fresh install) still gets the new min_interval_hours and
+// max_total_gb_per_project defaults, mirroring TestLoadFreshConfigUsesNewLowerDefault
+// for keep_last.
+func TestLoadFreshConfigGetsNewLimitDefaults(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.MinIntervalHours != DefaultMinIntervalHours {
+		t.Errorf("MinIntervalHours = %v, expected new default %v for a fresh install", cfg.MinIntervalHours, DefaultMinIntervalHours)
+	}
+	if cfg.MaxTotalGBPerProject != DefaultMaxTotalGBPerProject {
+		t.Errorf("MaxTotalGBPerProject = %v, expected new default %v for a fresh install", cfg.MaxTotalGBPerProject, DefaultMaxTotalGBPerProject)
+	}
+}
+
+// TestLoadExistingConfigWithExplicitNewLimitsWins confirms that when an
+// existing config DOES set min_interval_hours / max_total_gb_per_project
+// explicitly, that value wins rather than being zeroed.
+func TestLoadExistingConfigWithExplicitNewLimitsWins(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "codebak-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+	defer os.Setenv("HOME", origHome)
+
+	configDir := filepath.Join(tempDir, ".codebak")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("Failed to create config dir: %v", err)
+	}
+
+	configContent := `
+backup_dir: /backup
+min_interval_hours: 4
+max_total_gb_per_project: 10
+`
+	configPath := filepath.Join(configDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.MinIntervalHours != 4 {
+		t.Errorf("MinIntervalHours = %v, expected explicit 4 to win", cfg.MinIntervalHours)
+	}
+	if cfg.MaxTotalGBPerProject != 10 {
+		t.Errorf("MaxTotalGBPerProject = %v, expected explicit 10 to win", cfg.MaxTotalGBPerProject)
 	}
 }
